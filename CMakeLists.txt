@@ -37,7 +37,7 @@ function(get_caf)
 endfunction(get_caf)
 get_caf()
 
-aux_source_directory(. SOURCES)
+file(GLOB SOURCES *.c* *.h*)
 add_executable(warehouse-backend ${SOURCES} work/caf-application.conf)
 target_link_libraries(warehouse-backend PRIVATE CAF::net SQLite::SQLite3)
 set_target_properties(warehouse-backend PROPERTIES
