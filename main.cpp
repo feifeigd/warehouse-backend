@@ -2,6 +2,7 @@
 #include "applog.hpp"
 #include "config.h"
 #include "controller_actor.h"
+#include "database_actor.h"
 #include "item.hpp"
 #include "types.hpp"
 
@@ -34,16 +35,17 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 	auto current_working_directory = std::filesystem::current_path();
 	info("Current working directory: {}", current_working_directory.string());
 
+	auto [db_actor, events] = spawn_database_actor(sys);
+
 	// --(ctrl-server-begin)--
 	// Spin up the controller if configured.
 	if(cfg.cmd_port) {
 		auto cmd_server = caf::net::octet_stream::with(sys)
 			// Bind to the user-defined port.
 			.accept(cfg.cmd_port, cfg.cmd_addr)
-			.start([&sys](auto events) {
+			.start([&sys, db_actor](auto events) {
 				// Log new connections and disconnections.
 				info("cmd_server started, waiting for new connection..");
-				caf::actor db_actor;
 				auto cmd_server_processor = spawn_controller_actor(sys, db_actor, std::move(events));
 			});
 		if(!cmd_server) {

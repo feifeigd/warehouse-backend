@@ -5,13 +5,15 @@
 
 #include <caf/typed_actor.hpp>
 
+#include <cstdint>
+#include <utility>
 
 struct database_trait {
     using signatures = caf::type_list<
         // Retrieves an item from the database by its ID.
-        caf::result<item>(get_atom, int32_t)
-        // caf::result<int32_t>(inc_atom, int32_t, int32_t),
-        // caf::result<int32_t>(dec_atom, int32_t, int32_t)
+        caf::result<item>(get_atom, int32_t),
+        caf::result<int32_t>(inc_atom, int32_t, int32_t),
+        caf::result<int32_t>(dec_atom, int32_t, int32_t)
     >;
 };
 

@@ -2,6 +2,7 @@
 
 #include <caf/async/publisher.hpp>
 
+#include <cstdint>
 #include <memory>
 #include <string>
 

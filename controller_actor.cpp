@@ -40,14 +40,14 @@ bool inspect(Inspector& f, command& x) {
 }
 
 // --(spawn-controller-actor-impl-part1-begin)--
-caf::actor spawn_controller_actor(caf::actor_system& sys, caf::actor db_actor, caf::net::acceptor_resource<std::byte> events){
+caf::actor spawn_controller_actor(caf::actor_system& sys, database_actor db_actor, caf::net::acceptor_resource<std::byte> events){
     return sys.spawn([events = std::move(events), db_actor = std::move(db_actor)](caf::event_based_actor* self) mutable {
         // For each buffer pair, we create a new flow...
         events.observe_on(self).for_each([self, db_actor](auto ev) {
             info("controller added a new client");
             
             auto [pull, push] = ev.data();
-            pull.observe_on(self)
+            pull.observe_on(self)   // .. reads bytes from the client, splits them into lines, and transforms each line into a `command` struct ...
                 // .. that converts the lines to commands ...
                 .transform(caf::flow::byte::split_as_utf8_at('\n'))
                 // --(spawn-controller-actor-impl-part1-end)-- 
@@ -82,12 +82,12 @@ caf::actor spawn_controller_actor(caf::actor_system& sys, caf::actor db_actor, c
                     if ("inc" == cmd->type) {
                         result = self->mail(inc_atom_v, cmd->id, cmd->amount)
                             .request(db_actor, 1s)
-                            .as_observable<int32_t>();
+                            .as_observable();
                     }
                     else {
                         result = self->mail(dec_atom_v, cmd->id, cmd->amount)
                             .request(db_actor, 1s)
-                            .as_observable<int32_t>();
+                            .as_observable();
                     }
                     // On error, we return an error message to the client.
                     return result
