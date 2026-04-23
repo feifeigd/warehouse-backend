@@ -43,6 +43,8 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 		auto cmd_server = caf::net::octet_stream::with(sys)
 			// Bind to the user-defined port.
 			.accept(cfg.cmd_port, cfg.cmd_addr)
+			// Stop the server if our database actor terminates
+			.monitor(db_actor)
 			.start([&sys, db_actor](auto events) {
 				// Log new connections and disconnections.
 				info("cmd_server started, waiting for new connection..");

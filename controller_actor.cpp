@@ -42,6 +42,12 @@ bool inspect(Inspector& f, command& x) {
 // --(spawn-controller-actor-impl-part1-begin)--
 caf::actor spawn_controller_actor(caf::actor_system& sys, database_actor db_actor, caf::net::acceptor_resource<std::byte> events){
     return sys.spawn([events = std::move(events), db_actor = std::move(db_actor)](caf::event_based_actor* self) mutable {
+        // Stop if the database actor terminates.
+        self->monitor(db_actor, [self](caf::error const& reason) {
+			info("controller lost the database actor: {}", reason);
+			self->quit(reason);
+        });
+
         // For each buffer pair, we create a new flow...
         events.observe_on(self).for_each([self, db_actor](auto ev) {
             info("controller added a new client");
