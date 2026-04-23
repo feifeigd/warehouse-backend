@@ -10,7 +10,7 @@
 
 #include <string_view>
 
-// 复制自 caf 的 cmake/log.hpp.in
+// Adapted from CAF's cmake/log.hpp.in.
 using caf::format_string_with_location;
 using caf::log::level;
 using caf::logger;

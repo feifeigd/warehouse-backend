@@ -1,10 +1,15 @@
 
 #include "applog.hpp"
 #include "config.h"
+#include "controller_actor.h"
+#include "item.hpp"
+#include "types.hpp"
 
 #include <caf/caf_main.hpp>
 #include <caf/net/middleman.hpp>
 #include <caf/net/octet_stream/with.hpp>
+
+#include <atomic>
 
 #include <chrono>
 #include <csignal>
@@ -34,8 +39,17 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 	if(cfg.cmd_port) {
 		auto cmd_server = caf::net::octet_stream::with(sys)
 			// Bind to the user-defined port.
-			.accept(cfg.cmd_port, cfg.cmd_addr);
-			
+			.accept(cfg.cmd_port, cfg.cmd_addr)
+			.start([&sys](auto events) {
+				// Log new connections and disconnections.
+				info("cmd_server started, waiting for new connection..");
+				caf::actor db_actor;
+				auto cmd_server_processor = spawn_controller_actor(sys, db_actor, std::move(events));
+			});
+		if(!cmd_server) {
+			error("Failed to start command server: {}", cmd_server.error());
+			return EXIT_FAILURE;
+		}
 	}
 	// --(ctrl-server-end)--
 
@@ -47,4 +61,4 @@ int caf_main(caf::actor_system& sys, config const& cfg){
     return EXIT_SUCCESS;
 }
 
-CAF_MAIN(caf::net::middleman)
+CAF_MAIN(caf::net::middleman, caf::id_block::warehouse_backend)
