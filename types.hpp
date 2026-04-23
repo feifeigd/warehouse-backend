@@ -1,9 +1,9 @@
 #pragma once
 
-#include <caf/type_id.hpp>
-
 #include "ec.h"
 #include "item.hpp"
+
+#include <caf/type_id.hpp>
 
 CAF_BEGIN_TYPE_ID_BLOCK(warehouse_backend, first_custom_type_id)
 
