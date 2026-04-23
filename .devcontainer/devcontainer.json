@@ -1,0 +1,64 @@
+{
+  "name": "warehouse-backend-cpp",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "args": {
+      "HTTP_PROXY":  "${localEnv:DEVCONTAINER_HTTP_PROXY}",
+      "HTTPS_PROXY": "${localEnv:DEVCONTAINER_HTTPS_PROXY}",
+      "NO_PROXY":    "${localEnv:DEVCONTAINER_NO_PROXY}"
+    }
+  },
+
+  // 环境变量
+  "remoteEnv": {
+
+  },
+  // Windows/macOS 下容器访问宿主机代理不要直接写 127.0.0.1，
+  // 请在宿主机上设置 DEVCONTAINER_HTTP_PROXY=http://host.docker.internal:7890
+  // 并按需设置 DEVCONTAINER_HTTPS_PROXY / DEVCONTAINER_NO_PROXY。
+  // [Environment]::SetEnvironmentVariable("DEVCONTAINER_HTTP_PROXY", "http://host.docker.internal:7890", "User")
+  // [Environment]::SetEnvironmentVariable("DEVCONTAINER_HTTPS_PROXY", "http://host.docker.internal:7890", "User")
+  // [Environment]::SetEnvironmentVariable("DEVCONTAINER_NO_PROXY", "localhost,127.0.0.1,host.docker.internal", "User")
+  
+  // "remoteUser": "vscode",
+  "remoteUser": "root", 
+
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "containerEnv": {
+    "HTTP_PROXY":  "${localEnv:DEVCONTAINER_HTTP_PROXY}",
+    "HTTPS_PROXY": "${localEnv:DEVCONTAINER_HTTPS_PROXY}",
+    "NO_PROXY":    "${localEnv:DEVCONTAINER_NO_PROXY}",
+    "http_proxy":  "${localEnv:DEVCONTAINER_HTTP_PROXY}",
+    "https_proxy": "${localEnv:DEVCONTAINER_HTTPS_PROXY}",
+    "no_proxy":    "${localEnv:DEVCONTAINER_NO_PROXY}",
+    "VCPKG_ROOT": "/usr/local/vcpkg",
+    "CC": "gcc",
+    "CXX": "g++",
+    "VCPKG_FEATURE_FLAGS": "manifests"
+  },
+  // 打印环境
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "llvm-vs-code-extensions.vscode-clangd",
+        // "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "robocorp.robotframework-lsp",
+        "twxs.cmake",
+        "vadimcn.vscode-lldb",
+        "xaver.clang-format"
+      ],
+      "settings": {
+        "C_Cpp.default.cppStandard": "c++20",
+        "C_Cpp.default.compileCommands": "${workspaceFolder}/out/build/linux-x64-debug/compile_commands.json",
+        "clangd.arguments": [
+          "--compile-commands-dir=${workspaceFolder}/out/build/linux-x64-debug",
+          "--background-index"
+        ],
+        "cmake.useCMakePresets": "always"
+      }
+    }
+  }
+}

@@ -1,0 +1,130 @@
+{
+	"version": 6,
+	"cmakeMinimumRequired": {
+		"major": 3,
+		"minor": 28,
+		"patch": 0
+	},
+
+	"include": [
+
+    ],
+
+	"configurePresets": [
+		{
+			"name": "common-all",
+			"hidden": true,
+			"binaryDir": "${sourceDir}/out/build/${presetName}",
+			"installDir": "${sourceDir}/out/install/${presetName}",
+			"cacheVariables": {
+				"CMAKE_EXPORT_COMPILE_COMMANDS": {
+					"type": "BOOL",
+					"value": "ON"
+				}
+			}
+		},
+		{
+			"name": "common-Debug",
+			"hidden": true,
+			"inherits": "common-all",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Debug"
+			}
+		},
+		{
+			"name": "common-Release",
+			"hidden": true,
+			"inherits": "common-all",
+			"cacheVariables": {
+				"CMAKE_BUILD_TYPE": "Release"
+			}
+		},
+		{
+			"name": "windows-base",
+			"hidden": true,
+			"cacheVariables": {
+				"CMAKE_CONFIGURATION_TYPES": "Debug;Release;MinSizeRel;RelWithDebInfo"
+			},
+			"condition": {
+				"type": "equals",
+				"lhs": "${hostSystemName}",
+				"rhs": "Windows"
+			},
+			"generator": "Visual Studio 17 2022",
+			"inherits": "common-all",
+			"toolchainFile": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\vcpkg\\scripts\\buildsystems\\vcpkg.cmake",
+			"vendor": {
+				"microsoft.com/VisualStudioSettings/CMake/1.0": {
+					"hostOS": [ "Windows" ]
+				}
+			}
+		},
+		{
+			"name": "windows-x64",
+			"displayName": "windows-x64",
+			"architecture": {
+				"value": "x64",
+				"strategy": "external"
+			},
+			"inherits": [ "windows-base" ]
+		},
+		
+		{
+			"name": "linux-base",
+			"hidden": true,
+			"architecture": {
+				"value": "x64",
+				"strategy": "external"
+			},
+			"condition": {
+				"type": "equals",
+				"lhs": "${hostSystemName}",
+				"rhs": "Linux"
+			},
+			"generator": "Ninja",
+			"toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+			"environment": {
+				"CC": "gcc",
+				"CXX": "g++"
+			},
+			"cacheVariables": {
+				"CMAKE_MAKE_PROGRAM": "/usr/bin/ninja"
+			},
+			"vendor": {
+				"microsoft.com/VisualStudioSettings/CMake/1.0": {
+					"hostOS": [ "Linux" ]
+				},
+				"microsoft.com/VisualStudioRemoteSettings/CMake/1.0": {
+					"sourceDir": "$env{HOME}/.vs/$ms{projectDirName}"
+				}
+			}
+		},
+		{
+			"name": "linux-x64-debug",
+			"displayName": "linux-x64-debug",
+			"inherits": [ "linux-base", "common-Debug" ]
+		},
+		{
+			"name": "linux-x64-release",
+			"displayName": "linux-x64-release",
+			"inherits": [ "linux-base", "common-Release" ]
+		}
+	],
+
+	"buildPresets": [{
+		"name": "windows-x64",
+		"displayName": "windows-x64",
+		"configurePreset": "windows-x64",
+		"jobs": 16
+	},{
+		"name": "linux-x64-debug",
+		"displayName": "linux-x64-debug",
+		"configurePreset": "linux-x64-debug",
+		"jobs": 8
+	},{
+		"name": "linux-x64-release",
+		"displayName": "linux-x64-release",
+		"configurePreset": "linux-x64-release",
+		"jobs": 8
+	}]
+}

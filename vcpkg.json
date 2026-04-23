@@ -1,0 +1,9 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "warehouse-backend",
+  "version-string": "26.4.23",
+  "dependencies": [
+    "openssl",
+    "sqlite3"
+  ]
+}
