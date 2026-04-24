@@ -7,8 +7,13 @@
 #include "types.hpp"
 
 #include <caf/caf_main.hpp>
+#include <caf/event_based_actor.hpp>
+#include <caf/flow/observable_builder.hpp>
 #include <caf/net/http/with.hpp>
 #include <caf/net/middleman.hpp>
+#include <caf/net/octet_stream/with.hpp>
+#include <caf/net/web_socket/frame.hpp>
+#include <caf/net/web_socket/switch_protocol.hpp>
 #include <caf/net/octet_stream/with.hpp>
 
 #include <atomic>
@@ -22,10 +27,16 @@
 
 using namespace std::literals;
 
+namespace http = caf::net::http;
+namespace ws   = caf::net::web_socket;
+
+
 namespace {
-	std::atomic<bool> shutdown_flag;
-	void set_shutdown_flag(int) {
-		shutdown_flag = true;
+	volatile std::sig_atomic_t shutdown_flag = 0;
+	volatile std::sig_atomic_t shutdown_signal = 0;
+	void set_shutdown_flag(int signal_number) {
+		shutdown_flag = 1;
+		shutdown_signal = signal_number;
 	}
 
 	constexpr auto default_max_connections		= 128;
@@ -88,6 +99,9 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 	auto enable_tls = !cert_file.empty() && !key_file.empty();
 	auto max_connections = caf::get_or(cfg, "max-connections", default_max_connections);
 	auto max_request_size = caf::get_or(cfg, "max-request-size", default_max_request_size);
+
+	// --(http-server-config-end)--
+	// --(http-server-part1-begin)--
 	auto server = http::with(sys)
 		// Optionally enable TLS.
 		.context(ssl::context::enable(enable_tls)
@@ -101,12 +115,34 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 		.max_request_size(max_request_size)
 		// Stop the server if our database actor terminates.
 		.monitor(db_actor)
+		// --(http-server-part1-end)--
+		// --(http-server-part2-begin)--
 		// Minimal health endpoint.
 		.route("/status", http::method::get,
 			[](http::responder& res) {
 				res.respond(http::status::ok, "text/plain", "ok");
 			})
+
+
+		// --(http-server-part2-end)--
+		// --(http-server-part3-begin)--
+		// WebSocket route for subscribing to item events.
+		.route("/events", http::method::get,
+			ws::switch_protocol()
+				.on_request([](ws::acceptor<>& acceptor) {acceptor.accept(); })
+				.on_start([&sys](auto res) {
+					// Spawn a server for the websocket connection that simply
+					// spawns new workers for each incoming connection.
+					sys.spawn([res = std::move(res)](caf::event_based_actor* self) {
+						res.observe_on(self).for_each([self](auto new_conn) {
+							info("Websocket client connented");
+							self->spawn(ws_worker);
+						});
+					});
+				}))
+		// Start the server.
 		.start();
+		// --(http-server-part3-end)--
 
 	if (!server) {
 		error("Failed to start HTTP server: {}", server.error());
@@ -114,12 +150,20 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 	}
 	info("*** running at port {} with TLS {}abled, max connections: {}, max request size: {} bytes. Press CTRL+C to terminate the server.",
 		cfg.http_port, enable_tls ? "en" : "dis", max_connections, max_request_size);
-	// --(http-server-config-end)--
 
 
 	while (!shutdown_flag) {
 		std::this_thread::sleep_for(100ms);
 	}
+
+	if (shutdown_signal != 0) {
+		warning("Received shutdown signal: {}", static_cast<int>(shutdown_signal));
+	}
+
+	warning("*** shutting down");
+	//server->dispose();
+
+	anon_send_exit(db_actor, caf::exit_reason::user_shutdown);
 
     return EXIT_SUCCESS;
 }
