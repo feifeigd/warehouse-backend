@@ -1,5 +1,6 @@
 #pragma once
 
+#include "database.h"    // For `database_actor`
 #include "item.hpp" // item
 #include "types.hpp"    // For `inc_atom` and `dec_atom`.
 
@@ -21,4 +22,4 @@ struct database_trait {
 
 using database_actor = caf::typed_actor<database_trait>;
 
-std::pair<database_actor, item_events> spawn_database_actor(caf::actor_system& sys);
+std::pair<database_actor, item_events> spawn_database_actor(caf::actor_system& sys, database_ptr db );

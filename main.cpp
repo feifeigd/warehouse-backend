@@ -35,7 +35,15 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 	auto current_working_directory = std::filesystem::current_path();
 	info("Current working directory: {}", current_working_directory.string());
 
-	auto [db_actor, events] = spawn_database_actor(sys);
+	auto db_file = current_working_directory / "warehouse.db";
+	database_ptr db = std::make_shared<database>(db_file.string());
+	if (auto err = db->open()) {
+		error("Failed to open database: {}", err);
+		return EXIT_FAILURE;
+	}
+	info("Database opened successfully, current item count: {}", db->count());
+
+	auto [db_actor, events] = spawn_database_actor(sys, db);
 
 	// --(ctrl-server-begin)--
 	// Spin up the controller if configured.

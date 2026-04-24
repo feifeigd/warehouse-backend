@@ -20,6 +20,7 @@
 using namespace std::literals;
 
 // {"type": "inc", "id": 1, "amount": 2}
+// {"type": "dec", "id": 1, "amount": 1}
 struct command {
     std::string type; // Either "inc" or "dec"
     int32_t id{};

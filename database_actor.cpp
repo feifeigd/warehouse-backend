@@ -10,10 +10,12 @@
 
 struct database_actor_state {
     database_actor::pointer self;
-    std::unordered_map<int32_t, item> items;
+    database_ptr db;
+    
     caf::flow::multicaster<item_event> mcast;
 
-    database_actor_state(database_actor::pointer self_ptr, item_events* events) : self{ self_ptr }, mcast{self} {
+    database_actor_state(database_actor::pointer self_ptr, database_ptr db_ptr, item_events* events) 
+    : self{ self_ptr }, db{ db_ptr }, mcast{self} {
 		*events = mcast.as_observable().to_publisher();
     }
 
@@ -23,51 +25,60 @@ struct database_actor_state {
 database_actor::behavior_type database_actor_state::make_behavior() {
     return {
         [this](get_atom, int32_t id) -> caf::result<item> {
-            if (auto it = items.find(id); it != items.end()) {
-                return it->second;
+            if (auto value = db->get(id)) {
+                return {std::move(*value)};
             }
             return caf::make_error(ec::no_such_item);
         },
         [this](add_atom, int32_t id, int32_t price,
                std::string const& name) -> caf::result<void> {
-            if (items.contains(id)) {
-                return caf::make_error(ec::key_already_exists);
-            }
             auto value = item{id, price, 0, name};
-            items[id] = value;
+            if (auto ec = db->insert(value); ec != ec::nil) {
+                return caf::make_error(ec);
+            }
             mcast.push(std::make_shared<item>(std::move(value)));
             return {};
         },
         [this](inc_atom, int32_t id, int32_t amount) -> caf::result<int32_t> {
-            auto it = items.find(id);
-            if (it == items.end()) {
-                return caf::make_error(ec::no_such_item);
+            if (auto ec = db->inc(id, amount); ec != ec::nil) {
+                return caf::make_error(ec);
             }
-            auto& entry = it->second;
-            entry.available += amount;
-            return entry.available;
+            if (auto value = db->get(id)) {
+                auto result = value->available;
+                mcast.push(std::make_shared<item>(std::move(*value)));
+                return result;
+            }
+            return caf::make_error(ec::no_such_item);
         },
         [this](dec_atom, int32_t id, int32_t amount) -> caf::result<int32_t> {
-            auto it = items.find(id);
-            if (it == items.end()) {
-                return caf::make_error(ec::no_such_item);
+            if (auto ec = db->dec(id, amount); ec != ec::nil) {
+                return caf::make_error(ec);
             }
-            auto& entry = it->second;
-            entry.available -= amount;
-            return entry.available;
+            if (auto value = db->get(id)) {
+                auto result = value->available;
+                mcast.push(std::make_shared<item>(std::move(*value)));
+                return result;
+            }
+            return caf::make_error(ec::no_such_item);
         },
         [this](del_atom, int32_t id) -> caf::result<void> {
-            if (!items.erase(id)) {
+            auto value = db->get(id);
+            if (!value) {
                 return caf::make_error(ec::no_such_item);
             }
-            return {};
+             if (auto ec = db->del(id); ec != ec::nil) {
+                return caf::make_error(ec);
+            }
+            value->available = 0;
+            mcast.push(std::make_shared<item>(std::move(*value)));
+            return caf::unit;
         },
     };
 }
 
-std::pair<database_actor, item_events> spawn_database_actor(caf::actor_system& sys){
+std::pair<database_actor, item_events> spawn_database_actor(caf::actor_system& sys, database_ptr db) {
     // Note: the actor uses a blocking API(SQLite3) and thus should run in its own thread.
     item_events events;
-    auto handle = sys.spawn<caf::detached>(caf::actor_from_state<database_actor_state>, &events);
+    auto handle = sys.spawn<caf::detached>(caf::actor_from_state<database_actor_state>, db, &events);
     return {handle, std::move(events)};
 }
