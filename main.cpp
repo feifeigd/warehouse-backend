@@ -39,7 +39,7 @@ namespace {
 
 	constexpr auto default_max_connections		= 128;
 	constexpr auto default_max_request_size		= 65'536; // 64 KiB
-	constexpr auto default_max_pendding_frames	= 32;
+	constexpr auto default_max_pending_frames	= 32;
 	constexpr std::string_view json_mime_type	= "application/json";
 }
 
@@ -65,6 +65,8 @@ void ws_worker(caf::event_based_actor* self, caf::net::accept_event<ws::frame> n
 			}
 			return ws::frame{writer->str()};
 		})
+		.filter([](ws::frame const& frame) {return !frame.empty(); })
+		.on_backpressure_buffer(default_max_pending_frames)
 		.subscribe(push);
 }
 
