@@ -164,6 +164,22 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 			debug("GET /item/{}", key);
 			impl->get(res, key);
 		})
+		.route("/item/<arg>", http::method::post, [impl](http::responder& res, int32_t key) {
+			debug("POST /item/{}, body: {}", key, res.body());
+			impl->add(res, key);
+		})
+		.route("/item/<arg>/inc/<arg>", http::method::put, [impl](http::responder& res, int32_t key, int32_t amount) {
+			debug("PUT /item/{}/inc/{}", key, amount);
+			impl->inc(res, key, amount);
+		})
+		.route("/item/<arg>/dec/<arg>", http::method::put, [impl](http::responder& res, int32_t key, int32_t amount) {
+			debug("PUT /item/{}/dec/{}", key, amount);
+			impl->dec(res, key, amount);
+		})
+		.route("/item/<arg>", http::method::del, [impl](http::responder& res, int32_t key) {
+			debug("DELETE /item/{}/", key);
+			impl->del(res, key);
+		})
 		// Start the server.
 		.start();
 		// --(http-server-part3-end)--

@@ -127,7 +127,7 @@ ec database::inc(int32_t id, int32_t amount) {
     if (rc != SQLITE_DONE) {
         return ec::no_such_item;
     }
-    sqlite3_finalize(stmt);
+    
     return ec::nil;
 }
 

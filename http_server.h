@@ -29,7 +29,7 @@ private:
     template<class Responder>    
     void respond_with_error(Responder& prom, std::string_view code)const {
         using status = caf::net::http::status;
-        std::string body = R"_({"code":})_";
+        std::string body = R"_({"code":")_";
         body += code;
         body +="\"}";
         prom.respond(status::internal_server_error, json_mime_type, body);
