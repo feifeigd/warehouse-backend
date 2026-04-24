@@ -2,7 +2,7 @@
 #include "applog.hpp"
 #include "config.h"
 #include "controller_actor.h"
-#include "database_actor.h"
+#include "http_server.h"
 #include "item.hpp"
 #include "types.hpp"
 
@@ -121,6 +121,8 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 
 	// --(http-server-config-end)--
 	// --(http-server-part1-begin)--
+	auto impl = std::make_shared<http_server>(db_actor);
+
 	auto server = http::with(sys)
 		// Optionally enable TLS.
 		.context(ssl::context::enable(enable_tls)
@@ -141,8 +143,6 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 			[](http::responder& res) {
 				res.respond(http::status::ok, "text/plain", "ok");
 			})
-
-
 		// --(http-server-part2-end)--
 		// --(http-server-part3-begin)--
 		// WebSocket route for subscribing to item events.
@@ -159,6 +159,11 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 						});
 					});
 				}))
+		// 注册 http 路由
+		.route("/item/<arg>", http::method::get, [impl](http::responder& res, int32_t key) {
+			debug("GET /item/{}", key);
+			impl->get(res, key);
+		})
 		// Start the server.
 		.start();
 		// --(http-server-part3-end)--
