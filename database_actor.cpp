@@ -12,6 +12,7 @@ struct database_actor_state {
     database_actor::pointer self;
     database_ptr db;
     
+    // We use a multicaster to publish item events to multiple subscribers.
     caf::flow::multicaster<item_event> mcast;
 
     database_actor_state(database_actor::pointer self_ptr, database_ptr db_ptr, item_events* events) 
@@ -32,7 +33,7 @@ database_actor::behavior_type database_actor_state::make_behavior() {
         },
         [this](add_atom, int32_t id, int32_t price,
                std::string const& name) -> caf::result<void> {
-            auto value = item{id, price, 0, name};
+            auto value = item{id, price, 0, std::move(name)};
             if (auto ec = db->insert(value); ec != ec::nil) {
                 return caf::make_error(ec);
             }

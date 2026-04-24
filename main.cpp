@@ -7,6 +7,7 @@
 #include "types.hpp"
 
 #include <caf/caf_main.hpp>
+#include <caf/net/http/with.hpp>
 #include <caf/net/middleman.hpp>
 #include <caf/net/octet_stream/with.hpp>
 
@@ -16,6 +17,7 @@
 #include <csignal>
 #include <filesystem>
 #include <iostream>
+#include <string_view>
 #include <thread>
 
 using namespace std::literals;
@@ -25,6 +27,15 @@ namespace {
 	void set_shutdown_flag(int) {
 		shutdown_flag = true;
 	}
+
+	constexpr auto default_max_connections		= 128;
+	constexpr auto default_max_request_size		= 65'536; // 64 KiB
+	constexpr auto default_max_pendding_frames	= 32;
+	constexpr std::string_view json_mime_type	= "application/json";
+}
+
+void ws_worker(caf::event_based_actor* self) {
+
 }
 
 int caf_main(caf::actor_system& sys, config const& cfg){
@@ -64,6 +75,46 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 		}
 	}
 	// --(ctrl-server-end)--
+	// --(http-server-config-begin)--
+	namespace http = caf::net::http;
+	namespace ssl = caf::net::ssl;
+	auto cert_file = cfg.cert_file;
+	auto key_file = cfg.key_file;
+	if (!cert_file.empty() != !key_file.empty()) {
+		error("*** inconsistent TLS config: declare neither file or both");
+		return EXIT_FAILURE;
+	}
+	auto pem = ssl::format::pem;
+	auto enable_tls = !cert_file.empty() && !key_file.empty();
+	auto max_connections = caf::get_or(cfg, "max-connections", default_max_connections);
+	auto max_request_size = caf::get_or(cfg, "max-request-size", default_max_request_size);
+	auto server = http::with(sys)
+		// Optionally enable TLS.
+		.context(ssl::context::enable(enable_tls)
+			.and_then(ssl::emplace_server(ssl::tls::v1_2))
+			.and_then(ssl::use_private_key_file(key_file, pem))
+			.and_then(ssl::use_certificate_file(cert_file, pem)))
+		// Bind to the user-defined port.
+		.accept(cfg.http_port)
+		// Limit how many clients  may connected at any given time.
+		.max_connections(max_connections)
+		.max_request_size(max_request_size)
+		// Stop the server if our database actor terminates.
+		.monitor(db_actor)
+		// Minimal health endpoint.
+		.route("/status", http::method::get,
+			[](http::responder& res) {
+				res.respond(http::status::ok, "text/plain", "ok");
+			})
+		.start();
+
+	if (!server) {
+		error("Failed to start HTTP server: {}", server.error());
+		return EXIT_FAILURE;
+	}
+	info("*** running at port {} with TLS {}abled, max connections: {}, max request size: {} bytes. Press CTRL+C to terminate the server.",
+		cfg.http_port, enable_tls ? "en" : "dis", max_connections, max_request_size);
+	// --(http-server-config-end)--
 
 
 	while (!shutdown_flag) {
