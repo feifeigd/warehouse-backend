@@ -14,9 +14,7 @@
 #include <caf/net/octet_stream/with.hpp>
 #include <caf/net/web_socket/frame.hpp>
 #include <caf/net/web_socket/switch_protocol.hpp>
-#include <caf/net/octet_stream/with.hpp>
-
-#include <atomic>
+#include <caf/json_writer.hpp>
 
 #include <chrono>
 #include <csignal>
@@ -45,8 +43,29 @@ namespace {
 	constexpr std::string_view json_mime_type	= "application/json";
 }
 
-void ws_worker(caf::event_based_actor* self) {
+void ws_worker(caf::event_based_actor* self, caf::net::accept_event<ws::frame> new_conn, item_events events) {
+	// 读/写
+	auto [pull, push] = new_conn.data();
+	// 忽略客户端输入
+	pull.observe_on(self)
+		.do_finally([]() {info("WebSocket client disconnected."); })
+		.subscribe(std::ignore);
 
+	auto writer = std::make_shared<caf::json_writer>();
+	writer->skip_object_type_annotation(true);
+
+	// 写
+	events.observe_on(self)
+		.filter([](item_event const& item) -> bool{return !!item; })
+		.map([writer](item_event const& item) -> ws::frame {
+			writer->reset();
+			if (!writer->apply(*item)) {
+				error("failed to serialize an item event: {}", writer->get_error());
+				return {};
+			}
+			return ws::frame{writer->str()};
+		})
+		.subscribe(push);
 }
 
 int caf_main(caf::actor_system& sys, config const& cfg){
@@ -130,13 +149,13 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 		.route("/events", http::method::get,
 			ws::switch_protocol()
 				.on_request([](ws::acceptor<>& acceptor) {acceptor.accept(); })
-				.on_start([&sys](auto res) {
+				.on_start([&sys, ev = events](auto res) {
 					// Spawn a server for the websocket connection that simply
 					// spawns new workers for each incoming connection.
-					sys.spawn([res = std::move(res)](caf::event_based_actor* self) {
-						res.observe_on(self).for_each([self](auto new_conn) {
+					sys.spawn([res = std::move(res), ev = std::move(ev)](caf::event_based_actor* self) {
+						res.observe_on(self).for_each([self, ev = std::move(ev)](auto new_conn) {
 							info("Websocket client connented");
-							self->spawn(ws_worker);
+							self->spawn(ws_worker, std::move(new_conn), ev);
 						});
 					});
 				}))
