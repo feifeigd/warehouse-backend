@@ -509,23 +509,6 @@ public:
     return true;
   }
 
-  bool heartbeat_master(const std::string& node_name) {
-    if (!master_actor_ && !connect_to_master())
-      return false;
-    scoped_actor self{sys_};
-    auto ok = false;
-    self->request(master_actor_, 10s, master_heartbeat_atom_v, node_name).receive(
-      [&](const register_reply& reply) {
-        ok = reply.ok;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] master heartbeat failed: {}", cfg_.name,
-                    to_string(err));
-      }
-    );
-    return ok;
-  }
-
   actor lookup_remote_named_actor(const std::string& host,
                                   uint16_t port, const std::string& actor_name) {
     auto nid = with_retry([&] { return sys_.middleman().connect(host, port); });
@@ -607,33 +590,6 @@ public:
     return ok;
   }
 
-  bool heartbeat_parent_region(const node_manifest& manifest) {
-    if (manifest.parent.empty())
-      return true;
-    if (!master_actor_ && !connect_to_master())
-      return false;
-    scoped_actor self{sys_};
-    auto route = request_route(self, manifest.parent, k_region_router);
-    if (!route)
-      return false;
-    auto region_actor = lookup_remote_named_actor(route->host, route->port,
-                                                  route->actor_name);
-    if (!region_actor)
-      return false;
-    auto ok = false;
-    self->request(region_actor, 10s, region_heartbeat_atom_v, manifest.node_name)
-      .receive(
-        [&](const register_reply& reply) {
-          ok = reply.ok;
-        },
-        [&](const error& err) {
-          sys_.println("[{}] parent heartbeat failed: {}", manifest.node_name,
-                      to_string(err));
-        }
-      );
-    return ok;
-  }
-  
   bool unregister_from_master(const std::string& node_name) {
     if (!master_actor_ && !connect_to_master())
       return false;
