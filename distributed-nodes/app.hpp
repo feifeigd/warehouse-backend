@@ -113,6 +113,19 @@ bool inspect(Inspector& f, node_manifest& x) {
   );
 }
 
+struct node_registration {
+  node_manifest manifest;
+  actor monitor_actor;
+};
+
+template <class Inspector>
+bool inspect(Inspector& f, node_registration& x) {
+  return f.object(x).fields(
+    f.field("manifest", x.manifest),
+    f.field("monitor_actor", x.monitor_actor)
+  );
+}
+
 struct register_reply {
   bool ok = false;
   std::string message;
@@ -250,6 +263,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
 
   CAF_ADD_TYPE_ID(distributed_nodes, (node_kind))
   CAF_ADD_TYPE_ID(distributed_nodes, (node_manifest))
+  CAF_ADD_TYPE_ID(distributed_nodes, (node_registration))
   CAF_ADD_TYPE_ID(distributed_nodes, (register_reply))
   CAF_ADD_TYPE_ID(distributed_nodes, (actor_route))
   CAF_ADD_TYPE_ID(distributed_nodes, (topology_snapshot))
@@ -478,14 +492,15 @@ public:
     return true;
   }
   
-  bool register_with_master(const node_manifest& manifest) {
+  bool register_with_master(const node_manifest& manifest,
+                            const actor& monitor_actor) {
     if(!master_actor_) {
       if(!connect_to_master())
         return false;
     }
 
     scoped_actor self{sys_};
-    auto reply = request_register(self, manifest);
+    auto reply = request_register(self, node_registration{manifest, monitor_actor});
     if (!reply || !reply->ok) {
       sys_.println("[{}] registration was rejected", cfg_.name);
       return false;
@@ -523,7 +538,8 @@ public:
     return actor_cast<actor>(actor_ptr);
   }
 
-  bool attach_to_parent_region(const node_manifest& manifest) {
+  bool attach_to_parent_region(const node_manifest& manifest,
+                               const actor& monitor_actor) {
     if (manifest.parent.empty())
       return true;
     if (!master_actor_ && !connect_to_master())
@@ -543,7 +559,8 @@ public:
       return false;
     }
     auto ok = false;
-    self->request(region_actor, 10s, region_attach_atom_v, manifest).receive(
+    self->request(region_actor, 10s, region_attach_atom_v,
+                  node_registration{manifest, monitor_actor}).receive(
       [&](const register_reply& reply) {
         sys_.println("[{}] parent attach: {}", manifest.node_name, reply.message);
         ok = reply.ok;
@@ -706,9 +723,9 @@ public:
 private:
 
   std::optional<register_reply> request_register(scoped_actor& self,
-                                                const node_manifest& manifest) {
+                                                const node_registration& registration) {
     std::optional<register_reply> reply;
-    self->request(master_actor_, 10s, master_register_atom_v, manifest).receive(
+    self->request(master_actor_, 10s, master_register_atom_v, registration).receive(
       [&](const register_reply& value) {
         reply = value;
       },
@@ -812,17 +829,19 @@ private:
 
 bool start_managed_node(actor_system& sys, const node_config& cfg,
                         cluster& sys_cluster, const node_manifest& manifest,
+                        const actor& monitor_actor,
                         std::initializer_list<actor> actors,
                         bool attach_parent) {
   if (!open_node_port(sys, cfg.bind, cfg.port)) {
     shutdown_actors(actors);
     return false;
   }
-  if (!sys_cluster.register_with_master(manifest)) {
+  if (!sys_cluster.register_with_master(manifest, monitor_actor)) {
     shutdown_actors(actors);
     return false;
   }
-  if (attach_parent && !sys_cluster.attach_to_parent_region(manifest)) {
+  if (attach_parent && !sys_cluster.attach_to_parent_region(manifest,
+                                                            monitor_actor)) {
     sys_cluster.unregister_from_master(manifest.node_name);
     shutdown_actors(actors);
     return false;

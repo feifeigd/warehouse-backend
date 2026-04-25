@@ -6,6 +6,7 @@
 struct region_state {
   struct child_slot {
     node_manifest manifest;
+    actor monitor_actor;
     steady_clock_type::time_point expires_at = never_expires();
   };
 
@@ -34,9 +35,40 @@ struct region_state {
     return lease_deadline(lease_ttl);
   }
 
-  void upsert(node_manifest child) {
+  void upsert(node_manifest child, actor monitor_actor) {
     auto child_name = child.node_name;
-    children[std::move(child_name)] = child_slot{std::move(child), child_expiry()};
+    auto& slot = children[child_name];
+    auto same_monitor = slot.monitor_actor && monitor_actor
+                        && slot.monitor_actor.address() == monitor_actor.address();
+    if (slot.monitor_actor && !same_monitor)
+      self->demonitor(slot.monitor_actor);
+    slot.manifest = std::move(child);
+    slot.monitor_actor = monitor_actor;
+    slot.expires_at = child_expiry();
+    if (slot.monitor_actor && !same_monitor)
+      self->monitor(slot.monitor_actor);
+  }
+
+  void erase_child(std::unordered_map<std::string, child_slot>::iterator iter,
+                   bool demonitor_actor) {
+    if (demonitor_actor && iter->second.monitor_actor)
+      self->demonitor(iter->second.monitor_actor);
+    children.erase(iter);
+  }
+
+  bool erase_child_by_monitor(const actor_addr& source, const error& reason) {
+    for (auto iter = children.begin(); iter != children.end(); ++iter) {
+      if (!iter->second.monitor_actor)
+        continue;
+      if (iter->second.monitor_actor.address() != source)
+        continue;
+      self->println("[region:{}] child '{}' ({}) went down: {}", info.node_name,
+                    iter->second.manifest.node_name,
+                    to_string(iter->second.manifest.kind), to_string(reason));
+      erase_child(iter, false);
+      return true;
+    }
+    return false;
   }
 
   bool touch(const std::string& child_name) {
@@ -62,7 +94,7 @@ struct region_state {
         continue;
       self->println("[region:{}] expired child '{}' ({})", info.node_name,
                     child_name, to_string(iter->second.manifest.kind));
-      children.erase(iter);
+      erase_child(iter, true);
     }
   }
 
@@ -71,12 +103,13 @@ struct region_state {
       [this](node_describe_atom) {
         return info;
       },
-      [this](region_attach_atom, node_manifest child) {
+      [this](region_attach_atom, node_registration registration) {
         prune_expired();
+        auto child = std::move(registration.manifest);
         auto existed = children.find(child.node_name) != children.end();
         auto child_name = child.node_name;
         auto kind = child.kind;
-        upsert(std::move(child));
+        upsert(std::move(child), registration.monitor_actor);
         self->println("[region:{}] {} child '{}' ({})", info.node_name,
                       existed ? "updated" : "attached", child_name,
                       to_string(kind));
@@ -89,13 +122,16 @@ struct region_state {
         return register_reply{false, "child not found"};
       },
       [this](region_detach_atom, const std::string& child_name) {
-        auto erased = children.erase(child_name);
-        if (erased > 0) {
+        if (auto iter = children.find(child_name); iter != children.end()) {
+          erase_child(iter, true);
           self->println("[region:{}] detached child '{}'", info.node_name,
                         child_name);
           return register_reply{true, "child detached"};
         }
         return register_reply{false, "child not found"};
+      },
+      [this](const down_msg& msg) {
+        erase_child_by_monitor(msg.source, msg.reason);
       },
       [this](maintenance_tick_atom) {
         prune_expired();

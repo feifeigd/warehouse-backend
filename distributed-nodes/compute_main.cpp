@@ -39,7 +39,8 @@ void run_compute(actor_system& sys, const node_config& cfg) {
   node_heartbeat heartbeats;
 
   do{
-    if (!start_managed_node(sys, cfg, sys_cluster, manifest, {control, service},
+    if (!start_managed_node(sys, cfg, sys_cluster, manifest, control,
+                            {control, service},
                             true)) {
       break;
     }

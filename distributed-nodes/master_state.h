@@ -6,6 +6,7 @@
 class master_state {
   struct node_slot {
     node_manifest manifest;
+    actor monitor_actor;
     steady_clock_type::time_point expires_at = never_expires();
   };
 
@@ -13,7 +14,7 @@ public:
   explicit master_state(event_based_actor* selfptr, node_manifest manifest,
                         std::chrono::seconds lease_ttl)
     : self(selfptr), lease_ttl(lease_ttl) {
-    upsert(std::move(manifest));
+    upsert(std::move(manifest), {});
     schedule_maintenance();
   }
 
@@ -49,10 +50,41 @@ public:
     return lease_deadline(lease_ttl);
   }
 
-  void upsert(node_manifest manifest) {
+  void upsert(node_manifest manifest, actor monitor_actor) {
     auto expiry = expires_at(manifest.kind);
     auto node_name = manifest.node_name;
-    nodes[std::move(node_name)] = node_slot{std::move(manifest), expiry};
+    auto& slot = nodes[node_name];
+    auto same_monitor = slot.monitor_actor && monitor_actor
+                        && slot.monitor_actor.address() == monitor_actor.address();
+    if (slot.monitor_actor && !same_monitor)
+      self->demonitor(slot.monitor_actor);
+    slot.manifest = std::move(manifest);
+    slot.monitor_actor = monitor_actor;
+    slot.expires_at = expiry;
+    if (slot.monitor_actor && !same_monitor)
+      self->monitor(slot.monitor_actor);
+  }
+
+  void erase_node(std::unordered_map<std::string, node_slot>::iterator iter,
+                  bool demonitor_actor) {
+    if (demonitor_actor && iter->second.monitor_actor)
+      self->demonitor(iter->second.monitor_actor);
+    nodes.erase(iter);
+  }
+
+  bool erase_node_by_monitor(const actor_addr& source, const error& reason) {
+    for (auto iter = nodes.begin(); iter != nodes.end(); ++iter) {
+      if (!iter->second.monitor_actor)
+        continue;
+      if (iter->second.monitor_actor.address() != source)
+        continue;
+      self->println("[master] node '{}' ({}) went down: {}",
+                    iter->second.manifest.node_name,
+                    to_string(iter->second.manifest.kind), to_string(reason));
+      erase_node(iter, false);
+      return true;
+    }
+    return false;
   }
 
   bool touch(const std::string& node_name) {
@@ -81,20 +113,21 @@ public:
         continue;
       self->println("[master] expired node '{}' ({})", node_name,
                     to_string(iter->second.manifest.kind));
-      nodes.erase(iter);
+      erase_node(iter, true);
     }
   }
 
   behavior make_behavior() {
     return {
-      [this](master_register_atom, node_manifest manifest) {
+      [this](master_register_atom, node_registration registration) {
         prune_expired();
+        auto manifest = std::move(registration.manifest);
         auto existed = nodes.find(manifest.node_name) != nodes.end();
         auto node_name = manifest.node_name;
         auto kind = manifest.kind;
         auto parent = manifest.parent.empty() ? "<root>" : manifest.parent;
         auto actors = manifest.exported_actors;
-        upsert(std::move(manifest));
+        upsert(std::move(manifest), registration.monitor_actor);
         self->println("[master] {} node '{}' ({}) parent={} actors=[{}]",
                       existed ? "updated" : "registered", node_name,
                       to_string(kind), parent, join_strings(actors));
@@ -107,12 +140,15 @@ public:
         return register_reply{false, "node not found"};
       },
       [this](master_unregister_atom, const std::string& node_name) {
-        auto erased = nodes.erase(node_name);
-        if (erased > 0) {
+        if (auto iter = nodes.find(node_name); iter != nodes.end()) {
+          erase_node(iter, true);
           self->println("[master] unregistered node '{}'", node_name);
           return register_reply{true, "node removed"};
         }
         return register_reply{false, "node not found"};
+      },
+      [this](const down_msg& msg) {
+        erase_node_by_monitor(msg.source, msg.reason);
       },
       [this](maintenance_tick_atom) {
         prune_expired();
