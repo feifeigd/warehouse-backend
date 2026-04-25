@@ -36,15 +36,27 @@ void run_compute(actor_system& sys, const node_config& cfg) {
   auto service = sys.spawn(compute_service_actor_fun, manifest);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_compute_service, service);
-  if (!open_node_port(sys, cfg.bind, cfg.port))
-    return;
-  actor master_actor;
-  if (!sys_cluster.register_with_master(manifest))
-    return;
-  sys_cluster.attach_to_parent_region(manifest);
-  wait_for_shutdown(sys, "compute", cfg.lifetime);
-  anon_send_exit(control, exit_reason::user_shutdown);
-  anon_send_exit(service, exit_reason::user_shutdown);
+
+  do{
+    if (!open_node_port(sys, cfg.bind, cfg.port)) {
+      break;
+    }
+
+    if (!sys_cluster.register_with_master(manifest)) {
+      break;
+    }
+    if (!sys_cluster.attach_to_parent_region(manifest)) {
+      sys_cluster.unregister_from_master(manifest.node_name);
+      break;
+    }
+    
+    wait_for_shutdown(sys, "compute", cfg.lifetime);
+    sys_cluster.detach_from_parent_region(manifest);
+    sys_cluster.unregister_from_master(manifest.node_name);
+  
+  }while(false);
+
+  shutdown_actors({control, service});
 }
 
 void caf_main(actor_system& sys, const compute_config& cfg) {

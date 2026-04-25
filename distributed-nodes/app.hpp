@@ -260,11 +260,13 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_TYPE_ID(distributed_nodes, (storage_result))
 
   CAF_ADD_ATOM(distributed_nodes, master_register_atom)
+  CAF_ADD_ATOM(distributed_nodes, master_unregister_atom)
   CAF_ADD_ATOM(distributed_nodes, master_topology_atom)
   CAF_ADD_ATOM(distributed_nodes, master_resolve_atom)
   CAF_ADD_ATOM(distributed_nodes, master_children_atom)
   CAF_ADD_ATOM(distributed_nodes, node_describe_atom)
   CAF_ADD_ATOM(distributed_nodes, region_attach_atom)
+  CAF_ADD_ATOM(distributed_nodes, region_detach_atom)
   CAF_ADD_ATOM(distributed_nodes, region_status_atom)
   CAF_ADD_ATOM(distributed_nodes, compute_analyze_atom)
   CAF_ADD_ATOM(distributed_nodes, storage_lookup_atom)
@@ -301,6 +303,13 @@ std::string join_strings(const std::vector<std::string>& xs) {
     result += xs[index];
   }
   return result;
+}
+
+void shutdown_actors(std::initializer_list<actor> xs) {
+  for (const auto& x : xs) {
+    if (x)
+      anon_send_exit(x, exit_reason::user_shutdown);
+  }
 }
 
 template <class T>
@@ -475,34 +484,90 @@ public:
     return actor_cast<actor>(actor_ptr);
   }
 
-  void attach_to_parent_region(const node_manifest& manifest) {
+  bool attach_to_parent_region(const node_manifest& manifest) {
     if (manifest.parent.empty())
-      return;
+      return true;
+    if (!master_actor_ && !connect_to_master())
+      return false;
     scoped_actor self{sys_};
     auto route = request_route(self, manifest.parent, k_region_router);
     if (!route) {
       sys_.println("[{}] could not resolve parent region '{}'", manifest.node_name,
                   manifest.parent);
-      return;
+      return false;
     }
     auto region_actor = lookup_remote_named_actor(route->host, route->port,
                                                   route->actor_name);
     if (!region_actor) {
       sys_.println("[{}] could not lookup parent region actor '{}'",
                   manifest.node_name, manifest.parent);
-      return;
+      return false;
     }
+    auto ok = false;
     self->request(region_actor, 10s, region_attach_atom_v, manifest).receive(
       [&](const register_reply& reply) {
         sys_.println("[{}] parent attach: {}", manifest.node_name, reply.message);
+        ok = reply.ok;
       },
       [&](const error& err) {
         sys_.println("[{}] parent attach failed: {}", manifest.node_name,
                     to_string(err));
       }
     );
+    return ok;
+  }
+
+  bool detach_from_parent_region(const node_manifest& manifest) {
+    if (manifest.parent.empty())
+      return true;
+    if (!master_actor_ && !connect_to_master())
+      return false;
+    scoped_actor self{sys_};
+    auto route = request_route(self, manifest.parent, k_region_router);
+    if (!route) {
+      sys_.println("[{}] could not resolve parent region '{}' for detach",
+                  manifest.node_name, manifest.parent);
+      return false;
+    }
+    auto region_actor = lookup_remote_named_actor(route->host, route->port,
+                                                  route->actor_name);
+    if (!region_actor) {
+      sys_.println("[{}] could not lookup parent region actor '{}' for detach",
+                  manifest.node_name, manifest.parent);
+      return false;
+    }
+    auto ok = false;
+    self->request(region_actor, 10s, region_detach_atom_v, manifest.node_name)
+      .receive(
+        [&](const register_reply& reply) {
+          sys_.println("[{}] parent detach: {}", manifest.node_name, reply.message);
+          ok = reply.ok;
+        },
+        [&](const error& err) {
+          sys_.println("[{}] parent detach failed: {}", manifest.node_name,
+                      to_string(err));
+        }
+      );
+    return ok;
   }
   
+  bool unregister_from_master(const std::string& node_name) {
+    if (!master_actor_ && !connect_to_master())
+      return false;
+    scoped_actor self{sys_};
+    auto ok = false;
+    self->request(master_actor_, 10s, master_unregister_atom_v, node_name).receive(
+      [&](const register_reply& reply) {
+        sys_.println("[{}] unregister from master: {}", cfg_.name, reply.message);
+        ok = reply.ok;
+      },
+      [&](const error& err) {
+        sys_.println("[{}] unregister failed: {}", cfg_.name, to_string(err));
+      }
+    );
+    return ok;
+  }
+
   std::optional<topology_snapshot> request_topology(scoped_actor& self) {
     std::optional<topology_snapshot> snapshot;
     self->request(master_actor_, 10s, master_topology_atom_v).receive(

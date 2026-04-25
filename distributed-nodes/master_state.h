@@ -41,6 +41,14 @@ struct master_state {
                       join_strings(manifest.exported_actors));
         return register_reply{true, existed ? "node updated" : "node registered"};
       },
+      [this](master_unregister_atom, const std::string& node_name) {
+        auto erased = nodes.erase(node_name);
+        if (erased > 0) {
+          self->println("[master] unregistered node '{}'", node_name);
+          return register_reply{true, "node removed"};
+        }
+        return register_reply{false, "node not found"};
+      },
       [this](master_topology_atom) {
         return make_topology();
       },

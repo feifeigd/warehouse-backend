@@ -15,14 +15,22 @@ void run_region(actor_system& sys, const node_config& cfg) {
   auto router = sys.spawn(actor_from_state<region_state>, manifest);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_region_router, router);
-  if (!open_node_port(sys, cfg.bind, cfg.port))
-    return;
+
+  do{
+    if (!open_node_port(sys, cfg.bind, cfg.port)) {
+      break;
+    }
+    
+    if (!sys_cluster.register_with_master(manifest)) {
+      break;
+    }
+    
+    wait_for_shutdown(sys, "region", cfg.lifetime);
+    sys_cluster.unregister_from_master(manifest.node_name);
+
+  }while(false);
   
-  if (!sys_cluster.register_with_master(manifest))
-    return;
-  wait_for_shutdown(sys, "region", cfg.lifetime);
-  anon_send_exit(control, exit_reason::user_shutdown);
-  anon_send_exit(router, exit_reason::user_shutdown);
+  shutdown_actors({control, router});
 }
 
 void caf_main(actor_system& sys, const region_config& cfg) {

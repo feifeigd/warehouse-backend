@@ -57,4 +57,4 @@ if (-not (Wait-TcpPort -HostName $MasterHost -Port $MasterPort)) {
 }
 
 Write-Host "Running distributed-nodes client against ${MasterHost}:$MasterPort..."
-& $exePath --config-file $configPath
+& $exePath --config-file $configPath --master-host $MasterHost --master-port $MasterPort
