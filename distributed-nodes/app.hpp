@@ -14,9 +14,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -32,6 +35,13 @@ enum class node_kind : uint8_t {
   region,
   compute,
   storage,
+};
+
+enum class shutdown_source : uint8_t {
+  local = 0,
+  parent,
+  child,
+  external,
 };
 
 std::string to_string(node_kind x) {
@@ -92,6 +102,64 @@ bool inspect(Inspector& f, node_kind& x) {
   return caf::default_enum_inspect(f, x);
 }
 
+std::string to_string(shutdown_source x) {
+  switch (x) {
+    case shutdown_source::local:
+      return "local";
+    case shutdown_source::parent:
+      return "parent";
+    case shutdown_source::child:
+      return "child";
+    case shutdown_source::external:
+      return "external";
+  }
+  return "unknown";
+}
+
+bool from_string(std::string_view str, shutdown_source& x) {
+  if (str == "local") {
+    x = shutdown_source::local;
+    return true;
+  }
+  if (str == "parent") {
+    x = shutdown_source::parent;
+    return true;
+  }
+  if (str == "child") {
+    x = shutdown_source::child;
+    return true;
+  }
+  if (str == "external") {
+    x = shutdown_source::external;
+    return true;
+  }
+  return false;
+}
+
+bool from_integer(uint8_t value, shutdown_source& x) {
+  switch (value) {
+    case 0:
+      x = shutdown_source::local;
+      return true;
+    case 1:
+      x = shutdown_source::parent;
+      return true;
+    case 2:
+      x = shutdown_source::child;
+      return true;
+    case 3:
+      x = shutdown_source::external;
+      return true;
+    default:
+      return false;
+  }
+}
+
+template <class Inspector>
+bool inspect(Inspector& f, shutdown_source& x) {
+  return caf::default_enum_inspect(f, x);
+}
+
 struct node_manifest {
   node_kind kind = node_kind::master;
   std::string node_name;
@@ -123,6 +191,23 @@ bool inspect(Inspector& f, node_registration& x) {
   return f.object(x).fields(
     f.field("manifest", x.manifest),
     f.field("monitor_actor", x.monitor_actor)
+  );
+}
+
+struct shutdown_request {
+  std::string initiator;
+  std::string source_node;
+  std::string reason;
+  shutdown_source source = shutdown_source::local;
+};
+
+template <class Inspector>
+bool inspect(Inspector& f, shutdown_request& x) {
+  return f.object(x).fields(
+    f.field("initiator", x.initiator),
+    f.field("source_node", x.source_node),
+    f.field("reason", x.reason),
+    f.field("source", x.source)
   );
 }
 
@@ -262,8 +347,10 @@ bool inspect(Inspector& f, storage_result& x) {
 CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
 
   CAF_ADD_TYPE_ID(distributed_nodes, (node_kind))
+  CAF_ADD_TYPE_ID(distributed_nodes, (shutdown_source))
   CAF_ADD_TYPE_ID(distributed_nodes, (node_manifest))
   CAF_ADD_TYPE_ID(distributed_nodes, (node_registration))
+  CAF_ADD_TYPE_ID(distributed_nodes, (shutdown_request))
   CAF_ADD_TYPE_ID(distributed_nodes, (register_reply))
   CAF_ADD_TYPE_ID(distributed_nodes, (actor_route))
   CAF_ADD_TYPE_ID(distributed_nodes, (topology_snapshot))
@@ -283,6 +370,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_ATOM(distributed_nodes, maintenance_tick_atom)
   CAF_ADD_ATOM(distributed_nodes, heartbeat_tick_atom)
   CAF_ADD_ATOM(distributed_nodes, node_describe_atom)
+  CAF_ADD_ATOM(distributed_nodes, node_shutdown_atom)
   CAF_ADD_ATOM(distributed_nodes, region_attach_atom)
   CAF_ADD_ATOM(distributed_nodes, region_heartbeat_atom)
   CAF_ADD_ATOM(distributed_nodes, region_detach_atom)
@@ -303,7 +391,7 @@ constexpr auto k_maintenance_step  = 1s;
 std::vector<std::string> exported_actor_names(node_kind kind) {
   switch (kind) {
     case node_kind::master:
-      return {k_master_control};
+      return {k_master_control, k_node_control};
     case node_kind::region:
       return {k_node_control, k_region_router};
     case node_kind::compute:
@@ -353,10 +441,72 @@ void sort_manifests(std::vector<T>& xs) {
   });
 }
 
-behavior node_control_actor_fun(node_manifest manifest) {
+class shutdown_signal : public std::enable_shared_from_this<shutdown_signal> {
+public:
+  bool request_shutdown(shutdown_request request) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (request_)
+      return false;
+    request_ = std::move(request);
+    cv_.notify_all();
+    return true;
+  }
+
+  shutdown_request wait(actor_system& sys, const std::string& role,
+                        const std::string& node_name, uint32_t lifetime) {
+    if (lifetime > 0) {
+      sys.println("[{}] running for {} seconds", role, lifetime);
+      std::unique_lock<std::mutex> lock(mu_);
+      if (!cv_.wait_for(lock, std::chrono::seconds{lifetime},
+                        [&] { return request_.has_value(); })) {
+        request_ = shutdown_request{
+          node_name,
+          node_name,
+          "lifetime expired",
+          shutdown_source::local,
+        };
+      }
+      return *request_;
+    }
+    sys.println("[{}] press <enter> to stop", role);
+    auto self = shared_from_this();
+    std::thread([self, node_name] {
+      std::string dummy;
+      std::getline(std::cin, dummy);
+      self->request_shutdown(shutdown_request{
+        node_name,
+        node_name,
+        "console input",
+        shutdown_source::local,
+      });
+    }).detach();
+    std::unique_lock<std::mutex> lock(mu_);
+    cv_.wait(lock, [&] { return request_.has_value(); });
+    return *request_;
+  }
+
+private:
+  std::mutex mu_;
+  std::condition_variable cv_;
+  std::optional<shutdown_request> request_;
+};
+
+behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
+                                std::shared_ptr<shutdown_signal> signal) {
   return {
     [manifest](node_describe_atom) {
       return manifest;
+    },
+    [self, manifest, signal](node_shutdown_atom,
+                             shutdown_request request) -> register_reply {
+      auto accepted = signal->request_shutdown(request);
+      self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
+                    to_string(manifest.kind), manifest.node_name,
+                    accepted ? "requested" : "already pending",
+                    request.source_node.empty() ? "<unknown>" : request.source_node,
+                    to_string(request.source), request.reason);
+      return register_reply{true, accepted ? "shutdown requested"
+                                           : "shutdown already pending"};
     },
   };
 }
@@ -386,21 +536,6 @@ bool open_node_port(actor_system& sys, const std::string& bind_addr,
   }
   return true;
 }
-
-void wait_for_shutdown(actor_system& sys, const std::string& role,
-                       uint32_t lifetime) {
-  if (lifetime > 0) {
-    sys.println("[{}] running for {} seconds", role, lifetime);
-    std::this_thread::sleep_for(std::chrono::seconds{lifetime});
-  } else {
-    sys.println("[{}] press <enter> to stop", role);
-    std::string dummy;
-    std::getline(std::cin, dummy);
-  }
-}
-
-
-
 
 void print_tree(actor_system& sys, const topology_snapshot& snapshot,
                 const std::string& parent, int depth = 0) {
@@ -432,6 +567,8 @@ struct node_config : actor_system_config {
   std::string storage_key = "profile";
   uint32_t lease_seconds = 15;
   uint32_t node_heartbeat_seconds = 5;
+  bool shutdown_parent_on_exit = false;
+  bool shutdown_children_on_exit = false;
   uint32_t lifetime = 0;
 
   explicit node_config(std::string default_name, uint16_t default_port,
@@ -455,6 +592,10 @@ struct node_config : actor_system_config {
            "seconds before master/region evict a silent node")
       .add(node_heartbeat_seconds, "node-heartbeat-seconds",
            "seconds between node heartbeat refreshes, 0 disables heartbeats")
+      .add(shutdown_parent_on_exit, "shutdown-parent-on-exit",
+           "request parent shutdown when this node exits")
+      .add(shutdown_children_on_exit, "shutdown-children-on-exit",
+           "request child shutdown when this node exits")
       .add(lifetime, "lifetime,l",
            "node lifetime in seconds, 0 waits for <enter>");
   }
@@ -633,6 +774,35 @@ public:
     return region_actor;
   }
 
+  actor lookup_node_control_actor(scoped_actor& self,
+                                  const std::string& node_name) {
+    auto route = request_route(self, node_name, k_node_control);
+    if (!route)
+      return {};
+    return lookup_remote_named_actor(route->host, route->port, route->actor_name);
+  }
+
+  bool request_node_shutdown(scoped_actor& self, const std::string& node_name,
+                             const shutdown_request& request) {
+    auto control = lookup_node_control_actor(self, node_name);
+    if (!control) {
+      sys_.println("[{}] could not lookup node control for '{}'", cfg_.name,
+                   node_name);
+      return false;
+    }
+    auto ok = false;
+    self->request(control, 10s, node_shutdown_atom_v, request).receive(
+      [&](const register_reply& reply) {
+        ok = reply.ok;
+      },
+      [&](const error& err) {
+        sys_.println("[{}] shutdown request to '{}' failed: {}", cfg_.name,
+                     node_name, to_string(err));
+      }
+    );
+    return ok;
+  }
+
   std::optional<topology_snapshot> request_topology(scoped_actor& self) {
     std::optional<topology_snapshot> snapshot;
     self->request(master_actor_, 10s, master_topology_atom_v).receive(
@@ -740,7 +910,7 @@ behavior node_heartbeat_actor_fun(event_based_actor* self, actor master_actor,
   };
 }
 
-/// 用于向上级发送心跳
+/// Sends periodic heartbeats to the parent region and master.
 class node_heartbeat {
 public:
   node_heartbeat() = default;
@@ -753,7 +923,7 @@ public:
              const node_manifest& manifest, bool heartbeat_parent) {
     stop();
     if (cfg.node_heartbeat_seconds == 0)
-      return true; // 不发心跳
+      return true; // Heartbeats disabled by config.
     auto master_actor = sys_cluster.master_actor();
     if (!master_actor) {
       if (!sys_cluster.connect_to_master())
@@ -782,6 +952,85 @@ public:
 private:
   actor worker_;
 };
+
+shutdown_request make_local_shutdown_request(const node_manifest& manifest,
+                                             const std::string& reason) {
+  return shutdown_request{
+    manifest.node_name,
+    manifest.node_name,
+    reason,
+    shutdown_source::local,
+  };
+}
+
+shutdown_request make_parent_shutdown_request(const node_manifest& manifest,
+                                              const shutdown_request& trigger) {
+  return shutdown_request{
+    trigger.initiator.empty() ? manifest.node_name : trigger.initiator,
+    manifest.node_name,
+    trigger.reason.empty() ? "parent cascade" : trigger.reason,
+    shutdown_source::child,
+  };
+}
+
+shutdown_request make_child_shutdown_request(const node_manifest& manifest,
+                                             const shutdown_request& trigger) {
+  return shutdown_request{
+    trigger.initiator.empty() ? manifest.node_name : trigger.initiator,
+    manifest.node_name,
+    trigger.reason.empty() ? "child cascade" : trigger.reason,
+    shutdown_source::parent,
+  };
+}
+
+void propagate_shutdown_to_children(actor_system& sys, cluster& sys_cluster,
+                                    const node_config& cfg,
+                                    const node_manifest& manifest,
+                                    const shutdown_request& trigger) {
+  if (!cfg.shutdown_children_on_exit)
+    return;
+  scoped_actor self{sys};
+  auto children = sys_cluster.request_children(self, manifest.node_name);
+  if (!children)
+    return;
+  auto request = make_child_shutdown_request(manifest, trigger);
+  auto skip_child = trigger.source == shutdown_source::child
+                    ? trigger.source_node
+                    : std::string{};
+  for (const auto& child : children->children) {
+    if (!skip_child.empty() && child.node_name == skip_child)
+      continue;
+    sys_cluster.request_node_shutdown(self, child.node_name, request);
+  }
+}
+
+void propagate_shutdown_to_parent(actor_system& sys, cluster& sys_cluster,
+                                  const node_config& cfg,
+                                  const node_manifest& manifest,
+                                  const shutdown_request& trigger) {
+  if (!cfg.shutdown_parent_on_exit || manifest.parent.empty())
+    return;
+  if (trigger.source == shutdown_source::parent)
+    return;
+  scoped_actor self{sys};
+  sys_cluster.request_node_shutdown(self, manifest.parent,
+                                    make_parent_shutdown_request(manifest,
+                                                                 trigger));
+}
+
+void propagate_orderly_shutdown(actor_system& sys, cluster& sys_cluster,
+                                const node_config& cfg,
+                                const node_manifest& manifest,
+                                const shutdown_request& trigger) {
+  if (!cfg.shutdown_children_on_exit && !cfg.shutdown_parent_on_exit)
+    return;
+  sys.println("[{}] shutdown source={} initiator='{}' reason={}",
+              manifest.node_name, to_string(trigger.source),
+              trigger.initiator.empty() ? manifest.node_name : trigger.initiator,
+              trigger.reason.empty() ? "<none>" : trigger.reason);
+  propagate_shutdown_to_children(sys, sys_cluster, cfg, manifest, trigger);
+  propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
+}
 
 bool start_managed_node(actor_system& sys, const node_config& cfg,
                         cluster& sys_cluster, const node_manifest& manifest,

@@ -33,8 +33,7 @@ public:
     return snapshot;
   }
 
-// private:
-  // 相当于启动1秒定时器，每秒检查一次过期的节点
+  // Re-arm the periodic maintenance tick that prunes expired nodes.
   void schedule_maintenance() {
     self->delayed_send(self, k_maintenance_step, maintenance_tick_atom_v);
   }
@@ -149,4 +148,3 @@ public:
   std::chrono::seconds lease_ttl;
   monitored_node_registry nodes;
 };
-

@@ -38,7 +38,8 @@ behavior storage_service_actor_fun(event_based_actor* self,
 void run_storage(actor_system& sys, const node_config& cfg) {  
   cluster sys_cluster(sys, cfg);
   auto manifest = make_manifest(cfg, node_kind::storage);
-  auto control = sys.spawn(node_control_actor_fun, manifest);
+  auto shutdown = std::make_shared<shutdown_signal>();
+  auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);
   auto service = sys.spawn(storage_service_actor_fun, manifest);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_storage_service, service);
@@ -54,8 +55,9 @@ void run_storage(actor_system& sys, const node_config& cfg) {
       stop_managed_node(sys_cluster, manifest, {control, service}, true);
       break;
     }
-    wait_for_shutdown(sys, "storage", cfg.lifetime);
+    auto trigger = shutdown->wait(sys, "storage", manifest.node_name, cfg.lifetime);
     heartbeats.stop();
+    propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
     stop_managed_node(sys_cluster, manifest, {control, service}, true);
 
   }while(false);

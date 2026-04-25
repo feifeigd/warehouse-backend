@@ -107,6 +107,27 @@ Call through the topology from a client:
 - `storage-a1.conf`: storage leaf under `region-a`
 - `client.conf`: demo client that traverses the tree
 
+## Orderly Shutdown
+
+Each server node now supports two optional shutdown cascade switches:
+
+- `shutdown-parent-on-exit=true`: when this node exits, request shutdown on its parent
+- `shutdown-children-on-exit=true`: when this node exits, request shutdown on its direct children
+
+Examples:
+
+```powershell
+# Region exits after 6 seconds and tells compute/storage children to exit too.
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-region.exe --config-file distributed-nodes\region-a.conf --shutdown-children-on-exit=true --lifetime 6
+
+# Compute exits after 6 seconds and asks its parent region to exit.
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-compute.exe --config-file distributed-nodes\compute-a1.conf --shutdown-parent-on-exit=true --lifetime 6
+```
+
+When a parent-triggered shutdown reaches a child, the child does not send the
+same request back upward. Likewise, when a child-triggered shutdown reaches a
+parent, the parent skips sending the same request back to that child.
+
 ## Entry Files
 
 - `master_main.cpp`
