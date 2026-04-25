@@ -12,14 +12,11 @@
 #include <caf/type_id.hpp>
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <iostream>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -210,6 +207,8 @@ bool inspect(Inspector& f, shutdown_request& x) {
     f.field("source", x.source)
   );
 }
+
+#include "shutdown_signal.hpp"
 
 struct register_reply {
   bool ok = false;
@@ -440,56 +439,6 @@ void sort_manifests(std::vector<T>& xs) {
     return lhs.node_name < rhs.node_name;
   });
 }
-
-class shutdown_signal : public std::enable_shared_from_this<shutdown_signal> {
-public:
-  bool request_shutdown(shutdown_request request) {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (request_)
-      return false;
-    request_ = std::move(request);
-    cv_.notify_all();
-    return true;
-  }
-
-  shutdown_request wait(actor_system& sys, const std::string& role,
-                        const std::string& node_name, uint32_t lifetime) {
-    if (lifetime > 0) {
-      sys.println("[{}] running for {} seconds", role, lifetime);
-      std::unique_lock<std::mutex> lock(mu_);
-      if (!cv_.wait_for(lock, std::chrono::seconds{lifetime},
-                        [&] { return request_.has_value(); })) {
-        request_ = shutdown_request{
-          node_name,
-          node_name,
-          "lifetime expired",
-          shutdown_source::local,
-        };
-      }
-      return *request_;
-    }
-    sys.println("[{}] press <enter> to stop", role);
-    auto self = shared_from_this();
-    std::thread([self, node_name] {
-      std::string dummy;
-      std::getline(std::cin, dummy);
-      self->request_shutdown(shutdown_request{
-        node_name,
-        node_name,
-        "console input",
-        shutdown_source::local,
-      });
-    }).detach();
-    std::unique_lock<std::mutex> lock(mu_);
-    cv_.wait(lock, [&] { return request_.has_value(); });
-    return *request_;
-  }
-
-private:
-  std::mutex mu_;
-  std::condition_variable cv_;
-  std::optional<shutdown_request> request_;
-};
 
 behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
                                 std::shared_ptr<shutdown_signal> signal) {
@@ -1018,6 +967,7 @@ void propagate_shutdown_to_parent(actor_system& sys, cluster& sys_cluster,
                                                                  trigger));
 }
 
+// 顺序关机：先通知子节点，再通知父节点，避免父节点先关机导致子节点无法接收关机通知。
 void propagate_orderly_shutdown(actor_system& sys, cluster& sys_cluster,
                                 const node_config& cfg,
                                 const node_manifest& manifest,
