@@ -12,21 +12,21 @@ void run_region(actor_system& sys, const node_config& cfg) {
   cluster sys_cluster(sys, cfg);
   auto manifest = make_manifest(cfg, node_kind::region);
   auto control = sys.spawn(node_control_actor_fun, manifest);
-  auto router = sys.spawn(actor_from_state<region_state>, manifest);
+  auto router = sys.spawn(actor_from_state<region_state>, manifest,
+                          std::chrono::seconds{cfg.lease_seconds});
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_region_router, router);
+  node_heartbeat heartbeats;
 
   do{
-    if (!open_node_port(sys, cfg.bind, cfg.port)) {
+    if (!start_managed_node(sys, cfg, sys_cluster, manifest, {control, router},
+                            false)) {
       break;
     }
-    
-    if (!sys_cluster.register_with_master(manifest)) {
-      break;
-    }
-    
+    heartbeats.start(sys, cfg, manifest, false);
     wait_for_shutdown(sys, "region", cfg.lifetime);
-    sys_cluster.unregister_from_master(manifest.node_name);
+    heartbeats.stop();
+    stop_managed_node(sys_cluster, manifest, {control, router}, false);
 
   }while(false);
   

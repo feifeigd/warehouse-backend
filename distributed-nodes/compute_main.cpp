@@ -36,23 +36,17 @@ void run_compute(actor_system& sys, const node_config& cfg) {
   auto service = sys.spawn(compute_service_actor_fun, manifest);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_compute_service, service);
+  node_heartbeat heartbeats;
 
   do{
-    if (!open_node_port(sys, cfg.bind, cfg.port)) {
+    if (!start_managed_node(sys, cfg, sys_cluster, manifest, {control, service},
+                            true)) {
       break;
     }
-
-    if (!sys_cluster.register_with_master(manifest)) {
-      break;
-    }
-    if (!sys_cluster.attach_to_parent_region(manifest)) {
-      sys_cluster.unregister_from_master(manifest.node_name);
-      break;
-    }
-    
+    heartbeats.start(sys, cfg, manifest, true);
     wait_for_shutdown(sys, "compute", cfg.lifetime);
-    sys_cluster.detach_from_parent_region(manifest);
-    sys_cluster.unregister_from_master(manifest.node_name);
+    heartbeats.stop();
+    stop_managed_node(sys_cluster, manifest, {control, service}, true);
   
   }while(false);
 

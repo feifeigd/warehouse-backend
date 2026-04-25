@@ -10,7 +10,8 @@ struct master_config : node_config {
 
 void run_master(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::master);
-  auto master_actor = sys.spawn(actor_from_state<master_state>, manifest);
+  auto master_actor = sys.spawn(actor_from_state<master_state>, manifest,
+                                std::chrono::seconds{cfg.lease_seconds});
   sys.registry().put(k_master_control, master_actor);
   if (!open_node_port(sys, cfg.bind, cfg.port))
     return;

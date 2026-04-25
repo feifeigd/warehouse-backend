@@ -12,6 +12,7 @@
 #include <caf/type_id.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -260,12 +261,15 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_TYPE_ID(distributed_nodes, (storage_result))
 
   CAF_ADD_ATOM(distributed_nodes, master_register_atom)
+  CAF_ADD_ATOM(distributed_nodes, master_heartbeat_atom)
   CAF_ADD_ATOM(distributed_nodes, master_unregister_atom)
   CAF_ADD_ATOM(distributed_nodes, master_topology_atom)
   CAF_ADD_ATOM(distributed_nodes, master_resolve_atom)
   CAF_ADD_ATOM(distributed_nodes, master_children_atom)
+  CAF_ADD_ATOM(distributed_nodes, maintenance_tick_atom)
   CAF_ADD_ATOM(distributed_nodes, node_describe_atom)
   CAF_ADD_ATOM(distributed_nodes, region_attach_atom)
+  CAF_ADD_ATOM(distributed_nodes, region_heartbeat_atom)
   CAF_ADD_ATOM(distributed_nodes, region_detach_atom)
   CAF_ADD_ATOM(distributed_nodes, region_status_atom)
   CAF_ADD_ATOM(distributed_nodes, compute_analyze_atom)
@@ -278,6 +282,7 @@ constexpr char k_node_control[]    = "node.control";
 constexpr char k_region_router[]   = "region.router";
 constexpr char k_compute_service[] = "compute.service";
 constexpr char k_storage_service[] = "storage.service";
+constexpr auto k_maintenance_step  = 1s;
 
 // Returns the list of actor names that a node of the given kind exports.
 std::vector<std::string> exported_actor_names(node_kind kind) {
@@ -310,6 +315,16 @@ void shutdown_actors(std::initializer_list<actor> xs) {
     if (x)
       anon_send_exit(x, exit_reason::user_shutdown);
   }
+}
+
+using steady_clock_type = std::chrono::steady_clock;
+
+steady_clock_type::time_point never_expires() {
+  return steady_clock_type::time_point::max();
+}
+
+steady_clock_type::time_point lease_deadline(std::chrono::seconds ttl) {
+  return steady_clock_type::now() + ttl;
 }
 
 template <class T>
@@ -400,6 +415,8 @@ struct node_config : actor_system_config {
   std::string parent;
   std::string region = "region-a";
   std::string storage_key = "profile";
+  uint32_t lease_seconds = 15;
+  uint32_t node_heartbeat_seconds = 5;
   uint32_t lifetime = 0;
 
   explicit node_config(std::string default_name, uint16_t default_port,
@@ -419,6 +436,10 @@ struct node_config : actor_system_config {
       .add(parent, "parent", "parent node name for tree attachment")
       .add(region, "region,r", "target region for client mode")
       .add(storage_key, "storage-key", "lookup key for the storage node")
+      .add(lease_seconds, "lease-seconds",
+           "seconds before master/region evict a silent node")
+      .add(node_heartbeat_seconds, "node-heartbeat-seconds",
+           "seconds between node heartbeat refreshes, 0 disables heartbeats")
       .add(lifetime, "lifetime,l",
            "node lifetime in seconds, 0 waits for <enter>");
   }
@@ -470,6 +491,23 @@ public:
     }
     sys_.println("[{}] registered with master: {}", cfg_.name, reply->message);
     return true;
+  }
+
+  bool heartbeat_master(const std::string& node_name) {
+    if (!master_actor_ && !connect_to_master())
+      return false;
+    scoped_actor self{sys_};
+    auto ok = false;
+    self->request(master_actor_, 10s, master_heartbeat_atom_v, node_name).receive(
+      [&](const register_reply& reply) {
+        ok = reply.ok;
+      },
+      [&](const error& err) {
+        sys_.println("[{}] master heartbeat failed: {}", cfg_.name,
+                    to_string(err));
+      }
+    );
+    return ok;
   }
 
   actor lookup_remote_named_actor(const std::string& host,
@@ -545,6 +583,33 @@ public:
         },
         [&](const error& err) {
           sys_.println("[{}] parent detach failed: {}", manifest.node_name,
+                      to_string(err));
+        }
+      );
+    return ok;
+  }
+
+  bool heartbeat_parent_region(const node_manifest& manifest) {
+    if (manifest.parent.empty())
+      return true;
+    if (!master_actor_ && !connect_to_master())
+      return false;
+    scoped_actor self{sys_};
+    auto route = request_route(self, manifest.parent, k_region_router);
+    if (!route)
+      return false;
+    auto region_actor = lookup_remote_named_actor(route->host, route->port,
+                                                  route->actor_name);
+    if (!region_actor)
+      return false;
+    auto ok = false;
+    self->request(region_actor, 10s, region_heartbeat_atom_v, manifest.node_name)
+      .receive(
+        [&](const register_reply& reply) {
+          ok = reply.ok;
+        },
+        [&](const error& err) {
+          sys_.println("[{}] parent heartbeat failed: {}", manifest.node_name,
                       to_string(err));
         }
       );
@@ -627,3 +692,74 @@ private:
     return reply;
   }
 };
+
+/// 用于向上级发送心跳
+class node_heartbeat {
+public:
+  node_heartbeat() = default;
+
+  ~node_heartbeat() {
+    stop();
+  }
+
+  void start(actor_system& sys, const node_config& cfg, node_manifest manifest,
+             bool heartbeat_parent) {
+    stop();
+    if (cfg.node_heartbeat_seconds == 0)
+      return; // 不发心跳
+    stop_requested_.store(false);
+    worker_ = std::thread([this, &sys, &cfg, manifest = std::move(manifest),
+                           heartbeat_parent] {
+      cluster beat_cluster{sys, cfg};
+      auto interval = std::chrono::seconds{cfg.node_heartbeat_seconds};
+      while (!stop_requested_.load()) {
+        std::this_thread::sleep_for(interval);
+        if (stop_requested_.load())
+          break;
+        if (!beat_cluster.heartbeat_master(manifest.node_name))
+          continue;
+        if (heartbeat_parent)
+          beat_cluster.heartbeat_parent_region(manifest);
+      }
+    });
+  }
+
+  void stop() {
+    stop_requested_.store(true);
+    if (worker_.joinable())
+      worker_.join();
+  }
+
+private:
+  std::atomic<bool> stop_requested_{false};
+  std::thread worker_;
+};
+
+bool start_managed_node(actor_system& sys, const node_config& cfg,
+                        cluster& sys_cluster, const node_manifest& manifest,
+                        std::initializer_list<actor> actors,
+                        bool attach_parent) {
+  if (!open_node_port(sys, cfg.bind, cfg.port)) {
+    shutdown_actors(actors);
+    return false;
+  }
+  if (!sys_cluster.register_with_master(manifest)) {
+    shutdown_actors(actors);
+    return false;
+  }
+  if (attach_parent && !sys_cluster.attach_to_parent_region(manifest)) {
+    sys_cluster.unregister_from_master(manifest.node_name);
+    shutdown_actors(actors);
+    return false;
+  }
+  return true;
+}
+
+void stop_managed_node(cluster& sys_cluster, const node_manifest& manifest,
+                       std::initializer_list<actor> actors,
+                       bool attach_parent) {
+  if (attach_parent)
+    sys_cluster.detach_from_parent_region(manifest);
+  sys_cluster.unregister_from_master(manifest.node_name);
+  shutdown_actors(actors);
+}
