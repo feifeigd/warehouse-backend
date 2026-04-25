@@ -9,6 +9,7 @@
 #include <caf/caf_main.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/flow/observable_builder.hpp>
+#include <caf/io/middleman.hpp>
 #include <caf/net/http/with.hpp>
 #include <caf/net/middleman.hpp>
 #include <caf/net/octet_stream/with.hpp>
@@ -211,3 +212,4 @@ int caf_main(caf::actor_system& sys, config const& cfg){
 }
 
 CAF_MAIN(caf::net::middleman, caf::id_block::warehouse_backend)
+CAF_MAIN(caf::io::middleman, caf::net::middleman, caf::id_block::warehouse_backend)
