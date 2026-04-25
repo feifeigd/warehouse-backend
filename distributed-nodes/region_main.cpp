@@ -23,7 +23,10 @@ void run_region(actor_system& sys, const node_config& cfg) {
                             false)) {
       break;
     }
-    heartbeats.start(sys, cfg, manifest, false);
+    if (!heartbeats.start(sys, sys_cluster, cfg, manifest, false)) {
+      stop_managed_node(sys_cluster, manifest, {control, router}, false);
+      break;
+    }
     wait_for_shutdown(sys, "region", cfg.lifetime);
     heartbeats.stop();
     stop_managed_node(sys_cluster, manifest, {control, router}, false);

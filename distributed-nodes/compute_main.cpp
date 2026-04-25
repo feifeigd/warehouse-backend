@@ -43,7 +43,10 @@ void run_compute(actor_system& sys, const node_config& cfg) {
                             true)) {
       break;
     }
-    heartbeats.start(sys, cfg, manifest, true);
+    if (!heartbeats.start(sys, sys_cluster, cfg, manifest, true)) {
+      stop_managed_node(sys_cluster, manifest, {control, service}, true);
+      break;
+    }
     wait_for_shutdown(sys, "compute", cfg.lifetime);
     heartbeats.stop();
     stop_managed_node(sys_cluster, manifest, {control, service}, true);

@@ -267,6 +267,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_ATOM(distributed_nodes, master_resolve_atom)
   CAF_ADD_ATOM(distributed_nodes, master_children_atom)
   CAF_ADD_ATOM(distributed_nodes, maintenance_tick_atom)
+  CAF_ADD_ATOM(distributed_nodes, heartbeat_tick_atom)
   CAF_ADD_ATOM(distributed_nodes, node_describe_atom)
   CAF_ADD_ATOM(distributed_nodes, region_attach_atom)
   CAF_ADD_ATOM(distributed_nodes, region_heartbeat_atom)
@@ -633,6 +634,32 @@ public:
     return ok;
   }
 
+  actor master_actor() const {
+    return master_actor_;
+  }
+
+  actor lookup_parent_region_actor(const node_manifest& manifest) {
+    if (manifest.parent.empty())
+      return {};
+    if (!master_actor_ && !connect_to_master())
+      return {};
+    scoped_actor self{sys_};
+    auto route = request_route(self, manifest.parent, k_region_router);
+    if (!route) {
+      sys_.println("[{}] could not resolve parent region '{}' for heartbeat",
+                   manifest.node_name, manifest.parent);
+      return {};
+    }
+    auto region_actor = lookup_remote_named_actor(route->host, route->port,
+                                                  route->actor_name);
+    if (!region_actor) {
+      sys_.println("[{}] could not lookup parent region actor '{}' for heartbeat",
+                   manifest.node_name, manifest.parent);
+      return {};
+    }
+    return region_actor;
+  }
+
   std::optional<topology_snapshot> request_topology(scoped_actor& self) {
     std::optional<topology_snapshot> snapshot;
     self->request(master_actor_, 10s, master_topology_atom_v).receive(
@@ -693,6 +720,53 @@ private:
   }
 };
 
+behavior node_heartbeat_actor_fun(event_based_actor* self, actor master_actor,
+                                  actor parent_actor, std::string node_name,
+                                  std::chrono::seconds interval) {
+  auto schedule_next = [self, interval] {
+    self->delayed_send(self, interval, heartbeat_tick_atom_v);
+  };
+  schedule_next();
+  return {
+    [=](heartbeat_tick_atom) mutable {
+      self->request(master_actor, 10s, master_heartbeat_atom_v, node_name).then(
+        [=](const register_reply& reply) mutable {
+          if (!reply.ok) {
+            self->println("[{}] master heartbeat rejected: {}", node_name,
+                          reply.message);
+            schedule_next();
+            return;
+          }
+          if (!parent_actor) {
+            schedule_next();
+            return;
+          }
+          self->request(parent_actor, 10s, region_heartbeat_atom_v, node_name)
+            .then(
+              [=](const register_reply& parent_reply) mutable {
+                if (!parent_reply.ok) {
+                  self->println("[{}] parent heartbeat rejected: {}", node_name,
+                                parent_reply.message);
+                }
+                schedule_next();
+              },
+              [=](const error& err) mutable {
+                self->println("[{}] parent heartbeat failed: {}", node_name,
+                              to_string(err));
+                schedule_next();
+              }
+            );
+        },
+        [=](const error& err) mutable {
+          self->println("[{}] master heartbeat failed: {}", node_name,
+                        to_string(err));
+          schedule_next();
+        }
+      );
+    },
+  };
+}
+
 /// 用于向上级发送心跳
 class node_heartbeat {
 public:
@@ -702,37 +776,38 @@ public:
     stop();
   }
 
-  void start(actor_system& sys, const node_config& cfg, node_manifest manifest,
-             bool heartbeat_parent) {
+  bool start(actor_system& sys, cluster& sys_cluster, const node_config& cfg,
+             const node_manifest& manifest, bool heartbeat_parent) {
     stop();
     if (cfg.node_heartbeat_seconds == 0)
-      return; // 不发心跳
-    stop_requested_.store(false);
-    worker_ = std::thread([this, &sys, &cfg, manifest = std::move(manifest),
-                           heartbeat_parent] {
-      cluster beat_cluster{sys, cfg};
-      auto interval = std::chrono::seconds{cfg.node_heartbeat_seconds};
-      while (!stop_requested_.load()) {
-        std::this_thread::sleep_for(interval);
-        if (stop_requested_.load())
-          break;
-        if (!beat_cluster.heartbeat_master(manifest.node_name))
-          continue;
-        if (heartbeat_parent)
-          beat_cluster.heartbeat_parent_region(manifest);
-      }
-    });
+      return true; // 不发心跳
+    auto master_actor = sys_cluster.master_actor();
+    if (!master_actor) {
+      if (!sys_cluster.connect_to_master())
+        return false;
+      master_actor = sys_cluster.master_actor();
+    }
+    actor parent_actor;
+    if (heartbeat_parent) {
+      parent_actor = sys_cluster.lookup_parent_region_actor(manifest);
+      if (!parent_actor)
+        return false;
+    }
+    worker_ = sys.spawn(node_heartbeat_actor_fun, master_actor, parent_actor,
+                        manifest.node_name,
+                        std::chrono::seconds{cfg.node_heartbeat_seconds});
+    return static_cast<bool>(worker_);
   }
 
   void stop() {
-    stop_requested_.store(true);
-    if (worker_.joinable())
-      worker_.join();
+    if (worker_) {
+      anon_send_exit(worker_, exit_reason::user_shutdown);
+      worker_ = {};
+    }
   }
 
 private:
-  std::atomic<bool> stop_requested_{false};
-  std::thread worker_;
+  actor worker_;
 };
 
 bool start_managed_node(actor_system& sys, const node_config& cfg,
