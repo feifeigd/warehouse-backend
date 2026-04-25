@@ -8,34 +8,36 @@ struct client_config : node_config {
   }
 };
 
-void run_client(actor_system& sys, const node_config& cfg) {
-  cluster sys_cluster(sys, cfg);
-  if (!sys_cluster.connect_to_master()) {
-    sys.println("[client] could not lookup master actor");
-    return;
-  }
-  scoped_actor self{sys};
-  auto topology = sys_cluster.request_topology(self);
-  if (!topology)
-    return;
+namespace {
+
+void print_topology(actor_system& sys, const topology_snapshot& topology) {
   sys.println("[client] topology");
-  for (const auto& node : topology->nodes) {
-    if (node.kind == node_kind::master) {
-      sys.println("- {} [{}] {}:{}", node.node_name, to_string(node.kind),
-                  node.host, node.port);
-      print_tree(sys, *topology, node.node_name, 1);
-    }
+  for (const auto& node : topology.nodes) {
+    if (node.kind != node_kind::master)
+      continue;
+    sys.println("- {} [{}] {}:{}", node.node_name, to_string(node.kind),
+                node.host, node.port);
+    print_tree(sys, topology, node.node_name, 1);
   }
-  auto region_route = sys_cluster.request_route(self, cfg.region, k_region_router);
-  if (!region_route)
-    return;
-  auto region_actor = sys_cluster.lookup_remote_named_actor(region_route->host,
-                                                region_route->port,
-                                                region_route->actor_name);
-  if (!region_actor) {
-    sys.println("[client] could not lookup region actor '{}'", cfg.region);
-    return;
-  }
+}
+
+actor resolve_remote_actor(cluster& sys_cluster, scoped_actor& self,
+                           actor_system& sys, const std::string& node_name,
+                           const std::string& actor_name,
+                           const char* actor_label) {
+  auto route = sys_cluster.request_route(self, node_name, actor_name);
+  if (!route)
+    return {};
+  auto remote_actor = sys_cluster.lookup_remote_named_actor(route->host,
+                                                            route->port,
+                                                            route->actor_name);
+  if (!remote_actor)
+    sys.println("[client] could not lookup {} '{}'", actor_label, node_name);
+  return remote_actor;
+}
+
+void print_region_status(scoped_actor& self, actor_system& sys,
+                         const actor& region_actor) {
   self->request(region_actor, 10s, region_status_atom_v).receive(
     [&](const region_snapshot& snapshot) {
       std::vector<std::string> labels;
@@ -48,6 +50,27 @@ void run_client(actor_system& sys, const node_config& cfg) {
       sys.println("[client] region status failed: {}", to_string(err));
     }
   );
+}
+
+} // namespace
+
+void run_client(actor_system& sys, const node_config& cfg) {
+  cluster sys_cluster(sys, cfg);
+  if (!sys_cluster.connect_to_master()) {
+    sys.println("[client] could not lookup master actor");
+    return;
+  }
+  scoped_actor self{sys};
+  auto topology = sys_cluster.request_topology(self);
+  if (!topology)
+    return;
+  print_topology(sys, *topology);
+
+  auto region_actor = resolve_remote_actor(sys_cluster, self, sys, cfg.region,
+                                           k_region_router, "region actor");
+  if (!region_actor)
+    return;
+  print_region_status(self, sys, region_actor);
 
   auto children = sys_cluster.request_children(self, cfg.region);
   if (!children)
@@ -60,23 +83,16 @@ void run_client(actor_system& sys, const node_config& cfg) {
     return;
   }
 
-  auto compute_route = sys_cluster.request_route(self, compute_node->node_name,
-                                                 k_compute_service);
-  auto storage_route = sys_cluster.request_route(self, storage_node->node_name,
-                                                 k_storage_service);
-  if (!compute_route || !storage_route)
+  auto compute_actor = resolve_remote_actor(sys_cluster, self, sys,
+                                            compute_node->node_name,
+                                            k_compute_service,
+                                            "compute actor");
+  auto storage_actor = resolve_remote_actor(sys_cluster, self, sys,
+                                            storage_node->node_name,
+                                            k_storage_service,
+                                            "storage actor");
+  if (!compute_actor || !storage_actor)
     return;
-
-  auto compute_actor = sys_cluster.lookup_remote_named_actor(compute_route->host,
-                                                             compute_route->port,
-                                                             compute_route->actor_name);
-  auto storage_actor = sys_cluster.lookup_remote_named_actor(storage_route->host,
-                                                             storage_route->port,
-                                                             storage_route->actor_name);
-  if (!compute_actor || !storage_actor) {
-    sys.println("[client] failed to lookup compute or storage actor");
-    return;
-  }
 
   self->request(compute_actor, 10s, compute_analyze_atom_v,
                 analytics_request{{8, 13, 21, 34, 55}})
