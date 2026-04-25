@@ -1,19 +1,13 @@
 #pragma once
 
-#include "app.hpp"
+#include "membership_registry.h"
 
 
 class master_state {
-  struct node_slot {
-    node_manifest manifest;
-    actor monitor_actor;
-    steady_clock_type::time_point expires_at = never_expires();
-  };
-
 public:
   explicit master_state(event_based_actor* selfptr, node_manifest manifest,
                         std::chrono::seconds lease_ttl)
-    : self(selfptr), lease_ttl(lease_ttl) {
+    : self(selfptr), lease_ttl(lease_ttl), nodes(selfptr) {
     upsert(std::move(manifest), {});
     schedule_maintenance();
   }
@@ -21,8 +15,9 @@ public:
   topology_snapshot make_topology() const {
     topology_snapshot snapshot;
     snapshot.nodes.reserve(nodes.size());
-    for (const auto& [_, node] : nodes)
-      snapshot.nodes.push_back(node.manifest);
+    nodes.for_each_manifest([&](const node_manifest& manifest) {
+      snapshot.nodes.push_back(manifest);
+    });
     sort_manifests(snapshot.nodes);
     return snapshot;
   }
@@ -30,10 +25,10 @@ public:
   child_snapshot make_children(const std::string& parent_name) const {
     child_snapshot snapshot;
     snapshot.parent = parent_name;
-    for (const auto& [_, node] : nodes) {
-      if (node.manifest.parent == parent_name)
-        snapshot.children.push_back(node.manifest);
-    }
+    nodes.for_each_manifest([&](const node_manifest& manifest) {
+      if (manifest.parent == parent_name)
+        snapshot.children.push_back(manifest);
+    });
     sort_manifests(snapshot.children);
     return snapshot;
   }
@@ -51,70 +46,30 @@ public:
   }
 
   void upsert(node_manifest manifest, actor monitor_actor) {
-    auto expiry = expires_at(manifest.kind);
-    auto node_name = manifest.node_name;
-    auto& slot = nodes[node_name];
-    auto same_monitor = slot.monitor_actor && monitor_actor
-                        && slot.monitor_actor.address() == monitor_actor.address();
-    if (slot.monitor_actor && !same_monitor)
-      self->demonitor(slot.monitor_actor);
-    slot.manifest = std::move(manifest);
-    slot.monitor_actor = monitor_actor;
-    slot.expires_at = expiry;
-    if (slot.monitor_actor && !same_monitor)
-      self->monitor(slot.monitor_actor);
-  }
-
-  void erase_node(std::unordered_map<std::string, node_slot>::iterator iter,
-                  bool demonitor_actor) {
-    if (demonitor_actor && iter->second.monitor_actor)
-      self->demonitor(iter->second.monitor_actor);
-    nodes.erase(iter);
-  }
-
-  bool erase_node_by_monitor(const actor_addr& source, const error& reason) {
-    for (auto iter = nodes.begin(); iter != nodes.end(); ++iter) {
-      if (!iter->second.monitor_actor)
-        continue;
-      if (iter->second.monitor_actor.address() != source)
-        continue;
-      self->println("[master] node '{}' ({}) went down: {}",
-                    iter->second.manifest.node_name,
-                    to_string(iter->second.manifest.kind), to_string(reason));
-      erase_node(iter, false);
-      return true;
-    }
-    return false;
+    nodes.upsert(std::move(manifest), monitor_actor,
+                 [this](const node_manifest& item) {
+                   return expires_at(item.kind);
+                 });
   }
 
   bool touch(const std::string& node_name) {
-    auto iter = nodes.find(node_name);
-    if (iter == nodes.end())
-      return false;
-    // 心跳 刷新过期时间
-    iter->second.expires_at = expires_at(iter->second.manifest.kind);
-    return true;
+    return nodes.touch(node_name, [this](const node_manifest& item) {
+      return expires_at(item.kind);
+    });
   }
 
   void prune_expired() {
     if (lease_ttl.count() == 0)
       return;
-    auto now = steady_clock_type::now();
-    std::vector<std::string> expired;
-    for (const auto& [node_name, slot] : nodes) {
-      if (slot.manifest.kind == node_kind::master)
-        continue;
-      if (slot.expires_at <= now)
-        expired.push_back(node_name);
-    }
-    for (const auto& node_name : expired) {
-      auto iter = nodes.find(node_name);
-      if (iter == nodes.end())
-        continue;
-      self->println("[master] expired node '{}' ({})", node_name,
-                    to_string(iter->second.manifest.kind));
-      erase_node(iter, true);
-    }
+    nodes.prune_expired(steady_clock_type::now(),
+                        [](const node_manifest& manifest) {
+                          return manifest.kind == node_kind::master;
+                        },
+                        [this](const node_manifest& manifest) {
+                          self->println("[master] expired node '{}' ({})",
+                                        manifest.node_name,
+                                        to_string(manifest.kind));
+                        });
   }
 
   behavior make_behavior() {
@@ -122,7 +77,7 @@ public:
       [this](master_register_atom, node_registration registration) {
         prune_expired();
         auto manifest = std::move(registration.manifest);
-        auto existed = nodes.find(manifest.node_name) != nodes.end();
+        auto existed = nodes.contains(manifest.node_name);
         auto node_name = manifest.node_name;
         auto kind = manifest.kind;
         auto parent = manifest.parent.empty() ? "<root>" : manifest.parent;
@@ -140,15 +95,21 @@ public:
         return register_reply{false, "node not found"};
       },
       [this](master_unregister_atom, const std::string& node_name) {
-        if (auto iter = nodes.find(node_name); iter != nodes.end()) {
-          erase_node(iter, true);
+        if (nodes.erase(node_name, true)) {
           self->println("[master] unregistered node '{}'", node_name);
           return register_reply{true, "node removed"};
         }
         return register_reply{false, "node not found"};
       },
       [this](const down_msg& msg) {
-        erase_node_by_monitor(msg.source, msg.reason);
+        nodes.erase_by_monitor(msg.source, msg.reason,
+                               [this](const node_manifest& manifest,
+                                      const error& reason) {
+                                 self->println("[master] node '{}' ({}) went down: {}",
+                                               manifest.node_name,
+                                               to_string(manifest.kind),
+                                               to_string(reason));
+                               });
       },
       [this](maintenance_tick_atom) {
         prune_expired();
@@ -165,21 +126,20 @@ public:
       [this](master_resolve_atom, const std::string& node_name,
              const std::string& actor_name) -> result<actor_route> {
         prune_expired();
-        auto iter = nodes.find(node_name);
-        if (iter == nodes.end())
+        auto manifest = nodes.find_manifest(node_name);
+        if (!manifest)
           return make_error(sec::no_such_key);
-        const auto& manifest = iter->second.manifest;
-        auto found = std::find(manifest.exported_actors.begin(),
-                               manifest.exported_actors.end(), actor_name);
-        if (found == manifest.exported_actors.end())
+        auto found = std::find(manifest->exported_actors.begin(),
+                               manifest->exported_actors.end(), actor_name);
+        if (found == manifest->exported_actors.end())
           return make_error(sec::no_such_key);
         return actor_route{
-          manifest.node_name,
-          manifest.kind,
-          manifest.host,
-          manifest.port,
+          manifest->node_name,
+          manifest->kind,
+          manifest->host,
+          manifest->port,
           actor_name,
-          manifest.parent,
+          manifest->parent,
         };
       },
     };
@@ -187,6 +147,6 @@ public:
 
   event_based_actor* self;
   std::chrono::seconds lease_ttl;
-  std::unordered_map<std::string, node_slot> nodes;
+  monitored_node_registry nodes;
 };
 
