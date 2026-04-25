@@ -211,5 +211,4 @@ int caf_main(caf::actor_system& sys, config const& cfg){
     return EXIT_SUCCESS;
 }
 
-CAF_MAIN(caf::net::middleman, caf::id_block::warehouse_backend)
 CAF_MAIN(caf::io::middleman, caf::net::middleman, caf::id_block::warehouse_backend)

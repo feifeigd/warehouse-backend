@@ -2,6 +2,9 @@
 
 A tree-shaped distributed service sample built on top of `caf::io`.
 
+Each node type now has its own entry file and executable instead of sharing one
+`main.cpp`.
+
 ## Roles
 
 - `master`: the single management node
@@ -54,21 +57,21 @@ cmake --build --preset windows-x64 --target distributed-nodes
 Start the master:
 
 ```powershell
-.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes.exe --config-file distributed-nodes\master.conf
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-master.exe --config-file distributed-nodes\master.conf
 ```
 
 Start the region and leaf nodes:
 
 ```powershell
-.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes.exe --config-file distributed-nodes\region-a.conf
-.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes.exe --config-file distributed-nodes\compute-a1.conf
-.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes.exe --config-file distributed-nodes\storage-a1.conf
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-region.exe --config-file distributed-nodes\region-a.conf
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-compute.exe --config-file distributed-nodes\compute-a1.conf
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-storage.exe --config-file distributed-nodes\storage-a1.conf
 ```
 
 Call through the topology from a client:
 
 ```powershell
-.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes.exe --config-file distributed-nodes\client.conf
+.\out\build\windows-x64\distributed-nodes\Debug\distributed-nodes-client.exe --config-file distributed-nodes\client.conf
 ```
 
 ## Config files
@@ -79,3 +82,12 @@ Call through the topology from a client:
 - `compute-a1.conf`: compute leaf under `region-a`
 - `storage-a1.conf`: storage leaf under `region-a`
 - `client.conf`: demo client that traverses the tree
+
+## Entry Files
+
+- `master_main.cpp`
+- `region_main.cpp`
+- `compute_main.cpp`
+- `storage_main.cpp`
+- `client_main.cpp`
+- `app.hpp`: shared types, actor logic, and helper functions

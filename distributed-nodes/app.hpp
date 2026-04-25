@@ -1,8 +1,9 @@
+#pragma once
+
 #include <caf/actor_from_state.hpp>
 #include <caf/actor_registry.hpp>
 #include <caf/actor_system.hpp>
 #include <caf/actor_system_config.hpp>
-#include <caf/caf_main.hpp>
 #include <caf/default_enum_inspect.hpp>
 #include <caf/event_based_actor.hpp>
 #include <caf/io/middleman.hpp>
@@ -602,22 +603,26 @@ std::optional<node_manifest> first_child_of_kind(const child_snapshot& children,
   return std::nullopt;
 }
 
-struct config : actor_system_config {
-  std::string mode = "master";
-  std::string name = "master";
+struct node_config : actor_system_config {
+  std::string name;
   std::string host = "127.0.0.1";
   std::string bind;
-  uint16_t port = 46000;
+  uint16_t port;
   std::string master_host = "127.0.0.1";
-  uint16_t master_port = 46000;
+  uint16_t master_port = 47000;
   std::string parent;
   std::string region = "region-a";
   std::string storage_key = "profile";
   uint32_t lifetime = 0;
 
-  config() {
+  explicit node_config(std::string default_name, uint16_t default_port,
+                       std::string default_parent = {},
+                       std::string default_region = "region-a")
+    : name(std::move(default_name)),
+      port(default_port),
+      parent(std::move(default_parent)),
+      region(std::move(default_region)) {
     opt_group{custom_options_, "global"}
-      .add(mode, "mode,m", "master | region | compute | storage | client")
       .add(name, "name,n", "logical node name")
       .add(host, "host,H", "advertised host for the current node")
       .add(bind, "bind,B", "bind address for the local listener")
@@ -632,30 +637,18 @@ struct config : actor_system_config {
   }
 };
 
-node_kind kind_from_mode(const std::string& mode) {
-  if (mode == "master")
-    return node_kind::master;
-  if (mode == "region")
-    return node_kind::region;
-  if (mode == "compute")
-    return node_kind::compute;
-  if (mode == "storage")
-    return node_kind::storage;
-  return node_kind::master;
-}
-
-node_manifest make_manifest(const config& cfg, node_kind kind) {
+node_manifest make_manifest(const node_config& cfg, node_kind kind) {
   node_manifest manifest;
   manifest.kind = kind;
-  manifest.node_name  = cfg.name;
-  manifest.host       = cfg.host;
-  manifest.port       = cfg.port;
-  manifest.parent     = cfg.parent;
+  manifest.node_name = cfg.name;
+  manifest.host = cfg.host;
+  manifest.port = cfg.port;
+  manifest.parent = cfg.parent;
   manifest.exported_actors = exported_actor_names(kind);
   return manifest;
 }
 
-bool register_with_master(actor_system& sys, const config& cfg,
+bool register_with_master(actor_system& sys, const node_config& cfg,
                           const node_manifest& manifest, actor& master_actor) {
   master_actor = lookup_remote_named_actor(sys, cfg.master_host, cfg.master_port,
                                            k_master_control);
@@ -703,18 +696,18 @@ void attach_to_parent_region(actor_system& sys, const node_manifest& manifest,
   );
 }
 
-void run_master(actor_system& sys, const config& cfg) {
+void run_master(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::master);
   auto master_actor = sys.spawn(actor_from_state<master_state>, manifest);
   sys.registry().put(k_master_control, master_actor);
   if (!open_node_port(sys, cfg.bind, cfg.port))
     return;
   sys.println("[master] '{}' listening on {}:{}", cfg.name, cfg.host, cfg.port);
-  wait_for_shutdown(sys, cfg.mode, cfg.lifetime);
+  wait_for_shutdown(sys, "master", cfg.lifetime);
   anon_send_exit(master_actor, exit_reason::user_shutdown);
 }
 
-void run_region(actor_system& sys, const config& cfg) {
+void run_region(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::region);
   auto control = sys.spawn(node_control_actor_fun, manifest);
   auto router = sys.spawn(actor_from_state<region_state>, manifest);
@@ -725,12 +718,12 @@ void run_region(actor_system& sys, const config& cfg) {
   actor master_actor;
   if (!register_with_master(sys, cfg, manifest, master_actor))
     return;
-  wait_for_shutdown(sys, cfg.mode, cfg.lifetime);
+  wait_for_shutdown(sys, "region", cfg.lifetime);
   anon_send_exit(control, exit_reason::user_shutdown);
   anon_send_exit(router, exit_reason::user_shutdown);
 }
 
-void run_compute(actor_system& sys, const config& cfg) {
+void run_compute(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::compute);
   auto control = sys.spawn(node_control_actor_fun, manifest);
   auto service = sys.spawn(compute_service_actor_fun, manifest);
@@ -742,12 +735,12 @@ void run_compute(actor_system& sys, const config& cfg) {
   if (!register_with_master(sys, cfg, manifest, master_actor))
     return;
   attach_to_parent_region(sys, manifest, master_actor);
-  wait_for_shutdown(sys, cfg.mode, cfg.lifetime);
+  wait_for_shutdown(sys, "compute", cfg.lifetime);
   anon_send_exit(control, exit_reason::user_shutdown);
   anon_send_exit(service, exit_reason::user_shutdown);
 }
 
-void run_storage(actor_system& sys, const config& cfg) {
+void run_storage(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::storage);
   auto control = sys.spawn(node_control_actor_fun, manifest);
   auto service = sys.spawn(storage_service_actor_fun, manifest);
@@ -759,12 +752,12 @@ void run_storage(actor_system& sys, const config& cfg) {
   if (!register_with_master(sys, cfg, manifest, master_actor))
     return;
   attach_to_parent_region(sys, manifest, master_actor);
-  wait_for_shutdown(sys, cfg.mode, cfg.lifetime);
+  wait_for_shutdown(sys, "storage", cfg.lifetime);
   anon_send_exit(control, exit_reason::user_shutdown);
   anon_send_exit(service, exit_reason::user_shutdown);
 }
 
-void run_client(actor_system& sys, const config& cfg) {
+void run_client(actor_system& sys, const node_config& cfg) {
   auto master_actor = lookup_remote_named_actor(sys, cfg.master_host,
                                                 cfg.master_port,
                                                 k_master_control);
@@ -860,19 +853,3 @@ void run_client(actor_system& sys, const config& cfg) {
       }
     );
 }
-
-void caf_main(actor_system& sys, const config& cfg) {
-  if (cfg.mode == "master")
-    return run_master(sys, cfg);
-  if (cfg.mode == "region")
-    return run_region(sys, cfg);
-  if (cfg.mode == "compute")
-    return run_compute(sys, cfg);
-  if (cfg.mode == "storage")
-    return run_storage(sys, cfg);
-  if (cfg.mode == "client")
-    return run_client(sys, cfg);
-  sys.println("Unknown mode '{}'", cfg.mode);
-}
-
-CAF_MAIN(id_block::distributed_nodes, io::middleman)
