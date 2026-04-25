@@ -53,6 +53,8 @@ void run_compute(actor_system& sys, const node_config& cfg) {
     heartbeats.stop();
     propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
     stop_managed_node(sys_cluster, manifest, {control, service}, true);
+    shutdown->complete_shutdown(register_reply{true, "shutdown complete"});
+    propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
   
   }while(false);
 

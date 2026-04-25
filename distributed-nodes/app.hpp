@@ -208,8 +208,6 @@ bool inspect(Inspector& f, shutdown_request& x) {
   );
 }
 
-#include "shutdown_signal.hpp"
-
 struct register_reply {
   bool ok = false;
   std::string message;
@@ -222,6 +220,8 @@ bool inspect(Inspector& f, register_reply& x) {
     f.field("message", x.message)
   );
 }
+
+#include "shutdown_signal.hpp"
 
 struct actor_route {
   std::string node_name;
@@ -444,16 +444,21 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
                                 std::shared_ptr<shutdown_signal> signal) {
   return {
     [manifest](node_describe_atom) {
-      return manifest;
+      return manifest;  // 集群端口配置
     },
     [self, manifest, signal](node_shutdown_atom,
-                             shutdown_request request) -> register_reply {
+                             shutdown_request request) -> result<register_reply> {
       auto accepted = signal->request_shutdown(request);
       self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
                     to_string(manifest.kind), manifest.node_name,
                     accepted ? "requested" : "already pending",
                     request.source_node.empty() ? "<unknown>" : request.source_node,
                     to_string(request.source), request.reason);
+      if (request.source == shutdown_source::parent) {
+        auto waiter = self->make_response_promise();
+        signal->add_completion_waiter(waiter);
+        return waiter;
+      }
       return register_reply{true, accepted ? "shutdown requested"
                                            : "shutdown already pending"};
     },
@@ -740,7 +745,7 @@ public:
       return false;
     }
     auto ok = false;
-    self->request(control, 10s, node_shutdown_atom_v, request).receive(
+    self->request(control, 30s, node_shutdown_atom_v, request).receive(
       [&](const register_reply& reply) {
         ok = reply.ok;
       },
@@ -932,25 +937,79 @@ shutdown_request make_child_shutdown_request(const node_manifest& manifest,
   };
 }
 
-void propagate_shutdown_to_children(actor_system& sys, cluster& sys_cluster,
+std::vector<std::string> collect_subtree_node_names(
+  const topology_snapshot& snapshot, const std::string& root_name) {
+  std::vector<std::string> result;
+  std::vector<std::string> pending{root_name};
+  for (size_t index = 0; index < pending.size(); ++index) {
+    const auto& parent = pending[index];
+    for (const auto& node : snapshot.nodes) {
+      if (node.parent == parent) {
+        result.push_back(node.node_name);
+        pending.push_back(node.node_name);
+      }
+    }
+  }
+  return result;
+}
+
+bool topology_contains_any(const topology_snapshot& snapshot,
+                           const std::vector<std::string>& node_names) {
+  return std::any_of(snapshot.nodes.begin(), snapshot.nodes.end(),
+                     [&](const node_manifest& node) {
+                       return std::find(node_names.begin(), node_names.end(),
+                                        node.node_name) != node_names.end();
+                     });
+}
+
+void wait_for_subtree_shutdown(actor_system& sys, cluster& sys_cluster,
+                               const node_config& cfg,
+                               const node_manifest& manifest,
+                               const std::vector<std::string>& node_names) {
+  if (node_names.empty())
+    return;
+  scoped_actor self{sys};
+  const auto deadline = steady_clock_type::now() + 15s;
+  while (steady_clock_type::now() < deadline) {
+    auto topology = sys_cluster.request_topology(self);
+    if (!topology)
+      break;
+    if (!topology_contains_any(*topology, node_names)) {
+      sys.println("[{}] subtree under '{}' stopped", cfg.name,
+                  manifest.node_name);
+      return;
+    }
+    std::this_thread::sleep_for(200ms);
+  }
+  sys.println("[{}] timed out waiting for subtree under '{}' to stop",
+              cfg.name, manifest.node_name);
+}
+
+std::vector<std::string> propagate_shutdown_to_children(
+                                    actor_system& sys, cluster& sys_cluster,
                                     const node_config& cfg,
                                     const node_manifest& manifest,
                                     const shutdown_request& trigger) {
   if (!cfg.shutdown_children_on_exit)
-    return;
+    return {};
   scoped_actor self{sys};
-  auto children = sys_cluster.request_children(self, manifest.node_name);
-  if (!children)
-    return;
+  auto topology = sys_cluster.request_topology(self);
+  if (!topology)
+    return {};
+  auto subtree_node_names = collect_subtree_node_names(*topology,
+                                                       manifest.node_name);
   auto request = make_child_shutdown_request(manifest, trigger);
   auto skip_child = trigger.source == shutdown_source::child
                     ? trigger.source_node
                     : std::string{};
-  for (const auto& child : children->children) {
+  for (const auto& child : topology->nodes) {
+    if (child.parent != manifest.node_name)
+      continue;
     if (!skip_child.empty() && child.node_name == skip_child)
       continue;
     sys_cluster.request_node_shutdown(self, child.node_name, request);
   }
+  return subtree_node_names;
 }
 
 void propagate_shutdown_to_parent(actor_system& sys, cluster& sys_cluster,
@@ -978,8 +1037,10 @@ void propagate_orderly_shutdown(actor_system& sys, cluster& sys_cluster,
               manifest.node_name, to_string(trigger.source),
               trigger.initiator.empty() ? manifest.node_name : trigger.initiator,
               trigger.reason.empty() ? "<none>" : trigger.reason);
-  propagate_shutdown_to_children(sys, sys_cluster, cfg, manifest, trigger);
-  propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
+  auto subtree_node_names = propagate_shutdown_to_children(sys, sys_cluster,
+                                                           cfg, manifest,
+                                                           trigger);
+  wait_for_subtree_shutdown(sys, sys_cluster, cfg, manifest, subtree_node_names);
 }
 
 bool start_managed_node(actor_system& sys, const node_config& cfg,

@@ -24,6 +24,7 @@ void run_master(actor_system& sys, const node_config& cfg) {
   sys.println("[master] '{}' listening on {}:{}", cfg.name, cfg.host, cfg.port);
   auto trigger = shutdown->wait(sys, "master", manifest.node_name, cfg.lifetime);
   propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
+  shutdown->complete_shutdown(register_reply{true, "shutdown complete"});
   shutdown_actors({control, master_actor});
 }
 

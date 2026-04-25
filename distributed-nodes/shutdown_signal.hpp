@@ -1,6 +1,7 @@
 #pragma once
 
 #include <caf/actor_system.hpp>
+#include <caf/response_promise.hpp>
 
 #include <atomic>
 #include <chrono>
@@ -12,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 class process_shutdown_interrupt {
 public:
@@ -53,6 +55,29 @@ public:
   bool has_request() const {
     std::lock_guard<std::mutex> lock(mu_);
     return request_.has_value();
+  }
+
+  void add_completion_waiter(caf::response_promise waiter) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (completed_) {
+      waiter.deliver(completion_reply_);
+      return;
+    }
+    completion_waiters_.push_back(std::move(waiter));
+  }
+
+  void complete_shutdown(register_reply reply) {
+    std::vector<caf::response_promise> waiters;
+    {
+      std::lock_guard<std::mutex> lock(mu_);
+      if (completed_)
+        return;
+      completed_ = true;
+      completion_reply_ = std::move(reply);
+      waiters = std::move(completion_waiters_);
+    }
+    for (auto& waiter : waiters)
+      waiter.deliver(completion_reply_);
   }
 
   shutdown_request wait(caf::actor_system& sys, const std::string& role,
@@ -114,5 +139,8 @@ private:
   mutable std::mutex mu_;
   std::condition_variable cv_;
   std::optional<shutdown_request> request_;
+  bool completed_ = false;
+  register_reply completion_reply_{true, "shutdown complete"};
+  std::vector<caf::response_promise> completion_waiters_;
   std::atomic_bool interrupt_watcher_started_ = false;
 };
