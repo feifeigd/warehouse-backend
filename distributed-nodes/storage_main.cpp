@@ -35,7 +35,8 @@ behavior storage_service_actor_fun(event_based_actor* self,
   };
 }
 
-void run_storage(actor_system& sys, const node_config& cfg) {
+void run_storage(actor_system& sys, const node_config& cfg) {  
+  cluster sys_cluster(sys, cfg);
   auto manifest = make_manifest(cfg, node_kind::storage);
   auto control = sys.spawn(node_control_actor_fun, manifest);
   auto service = sys.spawn(storage_service_actor_fun, manifest);
@@ -43,10 +44,10 @@ void run_storage(actor_system& sys, const node_config& cfg) {
   sys.registry().put(k_storage_service, service);
   if (!open_node_port(sys, cfg.bind, cfg.port))
     return;
-  actor master_actor;
-  if (!register_with_master(sys, cfg, manifest, master_actor))
+  
+  if (!sys_cluster.register_with_master(manifest))
     return;
-  attach_to_parent_region(sys, manifest, master_actor);
+  sys_cluster.attach_to_parent_region(manifest);
   wait_for_shutdown(sys, "storage", cfg.lifetime);
   anon_send_exit(control, exit_reason::user_shutdown);
   anon_send_exit(service, exit_reason::user_shutdown);

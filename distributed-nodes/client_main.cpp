@@ -9,15 +9,13 @@ struct client_config : node_config {
 };
 
 void run_client(actor_system& sys, const node_config& cfg) {
-  auto master_actor = lookup_remote_named_actor(sys, cfg.master_host,
-                                                cfg.master_port,
-                                                k_master_control);
-  if (!master_actor) {
+  cluster sys_cluster(sys, cfg);
+  if (!sys_cluster.connect_to_master()) {
     sys.println("[client] could not lookup master actor");
     return;
   }
   scoped_actor self{sys};
-  auto topology = request_topology(self, master_actor);
+  auto topology = sys_cluster.request_topology(self);
   if (!topology)
     return;
   sys.println("[client] topology");
@@ -28,10 +26,10 @@ void run_client(actor_system& sys, const node_config& cfg) {
       print_tree(sys, *topology, node.node_name, 1);
     }
   }
-  auto region_route = request_route(self, master_actor, cfg.region, k_region_router);
+  auto region_route = sys_cluster.request_route(self, cfg.region, k_region_router);
   if (!region_route)
     return;
-  auto region_actor = lookup_remote_named_actor(sys, region_route->host,
+  auto region_actor = sys_cluster.lookup_remote_named_actor(region_route->host,
                                                 region_route->port,
                                                 region_route->actor_name);
   if (!region_actor) {
@@ -51,30 +49,30 @@ void run_client(actor_system& sys, const node_config& cfg) {
     }
   );
 
-  auto children = request_children(self, master_actor, cfg.region);
+  auto children = sys_cluster.request_children(self, cfg.region);
   if (!children)
     return;
-  auto compute_node = first_child_of_kind(*children, node_kind::compute);
-  auto storage_node = first_child_of_kind(*children, node_kind::storage);
+  auto compute_node = children->first_child_of_kind(node_kind::compute);
+  auto storage_node = children->first_child_of_kind(node_kind::storage);
   if (!compute_node || !storage_node) {
     sys.println("[client] region '{}' is missing compute or storage children",
                 cfg.region);
     return;
   }
 
-  auto compute_route = request_route(self, master_actor, compute_node->node_name,
-                                     k_compute_service);
-  auto storage_route = request_route(self, master_actor, storage_node->node_name,
-                                     k_storage_service);
+  auto compute_route = sys_cluster.request_route(self, compute_node->node_name,
+                                                 k_compute_service);
+  auto storage_route = sys_cluster.request_route(self, storage_node->node_name,
+                                                 k_storage_service);
   if (!compute_route || !storage_route)
     return;
 
-  auto compute_actor = lookup_remote_named_actor(sys, compute_route->host,
-                                                 compute_route->port,
-                                                 compute_route->actor_name);
-  auto storage_actor = lookup_remote_named_actor(sys, storage_route->host,
-                                                 storage_route->port,
-                                                 storage_route->actor_name);
+  auto compute_actor = sys_cluster.lookup_remote_named_actor(compute_route->host,
+                                                             compute_route->port,
+                                                             compute_route->actor_name);
+  auto storage_actor = sys_cluster.lookup_remote_named_actor(storage_route->host,
+                                                             storage_route->port,
+                                                             storage_route->actor_name);
   if (!compute_actor || !storage_actor) {
     sys.println("[client] failed to lookup compute or storage actor");
     return;

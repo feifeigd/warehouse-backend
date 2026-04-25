@@ -160,6 +160,14 @@ bool inspect(Inspector& f, topology_snapshot& x) {
 struct child_snapshot {
   std::string parent;
   std::vector<node_manifest> children;
+  
+  std::optional<node_manifest> first_child_of_kind(node_kind kind) const {
+    for (const auto& child : children) {
+      if (child.kind == kind)
+        return child;
+    }
+    return std::nullopt;
+  }
 };
 
 template <class Inspector>
@@ -328,17 +336,6 @@ auto with_retry(F fn, std::chrono::milliseconds total = 4s,
   return result;
 }
 
-actor lookup_remote_named_actor(actor_system& sys, const std::string& host,
-                                uint16_t port, const std::string& actor_name) {
-  auto nid = with_retry([&] { return sys.middleman().connect(host, port); });
-  if (!nid)
-    return {};
-  auto actor_ptr = with_retry(
-    [&] { return sys.middleman().remote_lookup(actor_name, *nid); });
-  if (!actor_ptr)
-    return {};
-  return actor_cast<actor>(actor_ptr);
-}
 
 bool open_node_port(actor_system& sys, const std::string& bind_addr,
                     uint16_t port) {
@@ -363,66 +360,8 @@ void wait_for_shutdown(actor_system& sys, const std::string& role,
   }
 }
 
-std::optional<register_reply> request_register(scoped_actor& self,
-                                               const actor& master,
-                                               const node_manifest& manifest) {
-  std::optional<register_reply> reply;
-  self->request(master, 10s, master_register_atom_v, manifest).receive(
-    [&](const register_reply& value) {
-      reply = value;
-    },
-    [&](const error& err) {
-      self->println("registration failed: {}", to_string(err));
-    }
-  );
-  return reply;
-}
 
-std::optional<actor_route> request_route(scoped_actor& self, const actor& master,
-                                         const std::string& node_name,
-                                         const std::string& actor_name) {
-  std::optional<actor_route> route;
-  self->request(master, 10s, master_resolve_atom_v, node_name, actor_name)
-    .receive(
-      [&](const actor_route& value) {
-        route = value;
-      },
-      [&](const error& err) {
-        self->println("resolve {}:{} failed: {}", node_name, actor_name,
-                      to_string(err));
-      }
-    );
-  return route;
-}
 
-std::optional<topology_snapshot> request_topology(scoped_actor& self,
-                                                  const actor& master) {
-  std::optional<topology_snapshot> snapshot;
-  self->request(master, 10s, master_topology_atom_v).receive(
-    [&](const topology_snapshot& value) {
-      snapshot = value;
-    },
-    [&](const error& err) {
-      self->println("topology request failed: {}", to_string(err));
-    }
-  );
-  return snapshot;
-}
-
-std::optional<child_snapshot> request_children(scoped_actor& self,
-                                               const actor& master,
-                                               const std::string& parent_name) {
-  std::optional<child_snapshot> snapshot;
-  self->request(master, 10s, master_children_atom_v, parent_name).receive(
-    [&](const child_snapshot& value) {
-      snapshot = value;
-    },
-    [&](const error& err) {
-      self->println("children request failed: {}", to_string(err));
-    }
-  );
-  return snapshot;
-}
 
 void print_tree(actor_system& sys, const topology_snapshot& snapshot,
                 const std::string& parent, int depth = 0) {
@@ -441,14 +380,6 @@ void print_tree(actor_system& sys, const topology_snapshot& snapshot,
   }
 }
 
-std::optional<node_manifest> first_child_of_kind(const child_snapshot& children,
-                                                 node_kind kind) {
-  for (const auto& child : children.children) {
-    if (child.kind == kind)
-      return child;
-  }
-  return std::nullopt;
-}
 
 struct node_config : actor_system_config {
   std::string name;
@@ -495,50 +426,139 @@ node_manifest make_manifest(const node_config& cfg, node_kind kind) {
   return manifest;
 }
 
-bool register_with_master(actor_system& sys, const node_config& cfg,
-                          const node_manifest& manifest, actor& master_actor) {
-  master_actor = lookup_remote_named_actor(sys, cfg.master_host, cfg.master_port,
-                                           k_master_control);
-  if (!master_actor) {
-    sys.println("[{}] failed to lookup master actor at {}:{}", cfg.name,
-                cfg.master_host, cfg.master_port);
-    return false;
-  }
-  scoped_actor self{sys};
-  auto reply = request_register(self, master_actor, manifest);
-  if (!reply || !reply->ok) {
-    sys.println("[{}] registration was rejected", cfg.name);
-    return false;
-  }
-  sys.println("[{}] registered with master: {}", cfg.name, reply->message);
-  return true;
-}
 
-void attach_to_parent_region(actor_system& sys, const node_manifest& manifest,
-                             const actor& master_actor) {
-  if (manifest.parent.empty())
-    return;
-  scoped_actor self{sys};
-  auto route = request_route(self, master_actor, manifest.parent, k_region_router);
-  if (!route) {
-    sys.println("[{}] could not resolve parent region '{}'", manifest.node_name,
-                manifest.parent);
-    return;
+class cluster{
+  actor_system& sys_;
+  const node_config& cfg_;
+  actor master_actor_;
+public:
+  cluster(actor_system& sys, const node_config& cfg, actor master_actor = {}) : sys_(sys), cfg_(cfg), master_actor_(master_actor) {
+    // nop
   }
-  auto region_actor = lookup_remote_named_actor(sys, route->host, route->port,
-                                                route->actor_name);
-  if (!region_actor) {
-    sys.println("[{}] could not lookup parent region actor '{}'",
-                manifest.node_name, manifest.parent);
-    return;
-  }
-  self->request(region_actor, 10s, region_attach_atom_v, manifest).receive(
-    [&](const register_reply& reply) {
-      sys.println("[{}] parent attach: {}", manifest.node_name, reply.message);
-    },
-    [&](const error& err) {
-      sys.println("[{}] parent attach failed: {}", manifest.node_name,
-                  to_string(err));
+
+  bool connect_to_master() {
+    master_actor_ = lookup_remote_named_actor(cfg_.master_host, cfg_.master_port,
+                                            k_master_control);
+    if (!master_actor_) {
+      sys_.println("[{}] failed to lookup master actor at {}:{}", cfg_.name,
+                  cfg_.master_host, cfg_.master_port);
+      return false;
     }
-  );
-}
+    return true;
+  }
+  
+  bool register_with_master(const node_manifest& manifest) {
+    if(!master_actor_) {
+      if(!connect_to_master())
+        return false;
+    }
+
+    scoped_actor self{sys_};
+    auto reply = request_register(self, manifest);
+    if (!reply || !reply->ok) {
+      sys_.println("[{}] registration was rejected", cfg_.name);
+      return false;
+    }
+    sys_.println("[{}] registered with master: {}", cfg_.name, reply->message);
+    return true;
+  }
+
+  actor lookup_remote_named_actor(const std::string& host,
+                                  uint16_t port, const std::string& actor_name) {
+    auto nid = with_retry([&] { return sys_.middleman().connect(host, port); });
+    if (!nid)
+      return {};
+    auto actor_ptr = with_retry(
+      [&] { return sys_.middleman().remote_lookup(actor_name, *nid); });
+    if (!actor_ptr)
+      return {};
+    return actor_cast<actor>(actor_ptr);
+  }
+
+  void attach_to_parent_region(const node_manifest& manifest) {
+    if (manifest.parent.empty())
+      return;
+    scoped_actor self{sys_};
+    auto route = request_route(self, manifest.parent, k_region_router);
+    if (!route) {
+      sys_.println("[{}] could not resolve parent region '{}'", manifest.node_name,
+                  manifest.parent);
+      return;
+    }
+    auto region_actor = lookup_remote_named_actor(route->host, route->port,
+                                                  route->actor_name);
+    if (!region_actor) {
+      sys_.println("[{}] could not lookup parent region actor '{}'",
+                  manifest.node_name, manifest.parent);
+      return;
+    }
+    self->request(region_actor, 10s, region_attach_atom_v, manifest).receive(
+      [&](const register_reply& reply) {
+        sys_.println("[{}] parent attach: {}", manifest.node_name, reply.message);
+      },
+      [&](const error& err) {
+        sys_.println("[{}] parent attach failed: {}", manifest.node_name,
+                    to_string(err));
+      }
+    );
+  }
+  
+  std::optional<topology_snapshot> request_topology(scoped_actor& self) {
+    std::optional<topology_snapshot> snapshot;
+    self->request(master_actor_, 10s, master_topology_atom_v).receive(
+      [&](const topology_snapshot& value) {
+        snapshot = value;
+      },
+      [&](const error& err) {
+        sys_.println("[{}] topology request failed: {}", cfg_.name, to_string(err));
+      }
+    );
+    return snapshot;
+  }
+  
+  std::optional<actor_route> request_route(scoped_actor& self,
+                                          const std::string& node_name,
+                                          const std::string& actor_name) {
+    std::optional<actor_route> route;
+    self->request(master_actor_, 10s, master_resolve_atom_v, node_name, actor_name)
+      .receive(
+        [&](const actor_route& value) {
+          route = value;
+        },
+        [&](const error& err) {
+          sys_.println("[{}] resolve {}:{} failed: {}", cfg_.name, node_name, actor_name,
+                        to_string(err));
+        }
+      );
+    return route;
+  }
+  
+  std::optional<child_snapshot> request_children(scoped_actor& self,
+                                                const std::string& parent_name) {
+    std::optional<child_snapshot> snapshot;
+    self->request(master_actor_, 10s, master_children_atom_v, parent_name).receive(
+      [&](const child_snapshot& value) {
+        snapshot = value;
+      },
+      [&](const error& err) {
+        self->println("children request failed: {}", to_string(err));
+      }
+    );
+    return snapshot;
+  }
+private:
+
+  std::optional<register_reply> request_register(scoped_actor& self,
+                                                const node_manifest& manifest) {
+    std::optional<register_reply> reply;
+    self->request(master_actor_, 10s, master_register_atom_v, manifest).receive(
+      [&](const register_reply& value) {
+        reply = value;
+      },
+      [&](const error& err) {
+        self->println("registration failed: {}", to_string(err));
+      }
+    );
+    return reply;
+  }
+};
