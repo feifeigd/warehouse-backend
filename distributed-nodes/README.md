@@ -57,25 +57,25 @@ cmake --build --preset windows-x64 --target distributed-nodes
 One-click start for all server nodes in dedicated PowerShell windows:
 
 ```powershell
-.\distributed-nodes\start-nodes.cmd
+.\distributed-nodes\scripts\start-nodes.cmd
 ```
 
 One-click stop for all server nodes:
 
 ```powershell
-.\distributed-nodes\stop-nodes.cmd
+.\distributed-nodes\scripts\stop-nodes.cmd
 ```
 
 One-click start for the demo client in a dedicated PowerShell window:
 
 ```powershell
-.\distributed-nodes\start-client.cmd
+.\distributed-nodes\scripts\start-client.cmd
 ```
 
 One-click full demo run: start nodes, run client, then stop nodes automatically:
 
 ```powershell
-.\distributed-nodes\run-demo.cmd
+.\distributed-nodes\scripts\run-demo.cmd
 ```
 
 Start the master:

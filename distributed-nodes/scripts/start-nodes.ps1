@@ -5,7 +5,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$distributedNodesDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$repoRoot = (Resolve-Path (Join-Path $distributedNodesDir '..')).Path
+$configDir = $distributedNodesDir
 $binaryDir = Join-Path $repoRoot "out\build\windows-x64\distributed-nodes\$Configuration"
 
 function Wait-TcpPort {
@@ -92,7 +94,7 @@ if (Test-NodeAlreadyRunning -ProcessNames $processNames) {
 
 foreach ($node in $nodes) {
   $exePath = Join-Path $binaryDir $node.Exe
-  $configPath = Join-Path $PSScriptRoot $node.Config
+  $configPath = Join-Path $configDir $node.Config
 
   if (-not (Test-Path $exePath)) {
     throw "Missing executable: $exePath"

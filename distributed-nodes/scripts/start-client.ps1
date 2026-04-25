@@ -7,10 +7,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$distributedNodesDir = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+$repoRoot = (Resolve-Path (Join-Path $distributedNodesDir '..')).Path
+$configDir = $distributedNodesDir
 $binaryDir = Join-Path $repoRoot "out\build\windows-x64\distributed-nodes\$Configuration"
 $exePath = Join-Path $binaryDir 'distributed-nodes-client.exe'
-$configPath = Join-Path $PSScriptRoot 'client.conf'
+$configPath = Join-Path $configDir 'client.conf'
 
 function Wait-TcpPort {
   param(
