@@ -8,6 +8,33 @@ struct storage_config : node_config {
   }
 };
 
+
+behavior storage_service_actor_fun(event_based_actor* self,
+                                   const node_manifest& manifest) {
+  const auto parent_name = manifest.parent.empty() ? "master" : manifest.parent;
+  const std::map<std::string, std::string> records{
+    {"profile", "profile owned by " + manifest.node_name},
+    {"parent", parent_name},
+    {"tree", parent_name + " -> " + manifest.node_name},
+    {"motd", "hello from " + manifest.node_name},
+  };
+  return {
+    [self, manifest, records](storage_lookup_atom,
+                              const storage_request& request) -> storage_result {
+      storage_result result;
+      result.node_name = manifest.node_name;
+      result.key = request.key;
+      if (auto iter = records.find(request.key); iter != records.end())
+        result.value = iter->second;
+      else
+        result.value = "<missing:" + request.key + ">";
+      self->println("[storage:{}] served key '{}'", manifest.node_name,
+                    request.key);
+      return result;
+    },
+  };
+}
+
 void run_storage(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::storage);
   auto control = sys.spawn(node_control_actor_fun, manifest);

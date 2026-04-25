@@ -263,12 +263,13 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
 
 CAF_END_TYPE_ID_BLOCK(distributed_nodes)
 
-constexpr char k_master_control[] = "master.control";
-constexpr char k_node_control[] = "node.control";
-constexpr char k_region_router[] = "region.router";
+constexpr char k_master_control[]  = "master.control";
+constexpr char k_node_control[]    = "node.control";
+constexpr char k_region_router[]   = "region.router";
 constexpr char k_compute_service[] = "compute.service";
 constexpr char k_storage_service[] = "storage.service";
 
+// Returns the list of actor names that a node of the given kind exports.
 std::vector<std::string> exported_actor_names(node_kind kind) {
   switch (kind) {
     case node_kind::master:
@@ -313,160 +314,6 @@ behavior node_control_actor_fun(node_manifest manifest) {
   };
 }
 
-behavior compute_service_actor_fun(event_based_actor* self,
-                                   const node_manifest& manifest) {
-  return {
-    [self, manifest](compute_analyze_atom,
-                     const analytics_request& request) -> analytics_result {
-      analytics_result result;
-      result.node_name = manifest.node_name;
-      result.count = static_cast<uint32_t>(request.values.size());
-      if (!request.values.empty())
-        result.max = *std::max_element(request.values.begin(),
-                                       request.values.end());
-      for (auto value : request.values)
-        result.sum += value;
-      self->println("[compute:{}] processed {} values", manifest.node_name,
-                    result.count);
-      return result;
-    },
-  };
-}
-
-behavior storage_service_actor_fun(event_based_actor* self,
-                                   const node_manifest& manifest) {
-  const auto parent_name = manifest.parent.empty() ? "master" : manifest.parent;
-  const std::map<std::string, std::string> records{
-    {"profile", "profile owned by " + manifest.node_name},
-    {"parent", parent_name},
-    {"tree", parent_name + " -> " + manifest.node_name},
-    {"motd", "hello from " + manifest.node_name},
-  };
-  return {
-    [self, manifest, records](storage_lookup_atom,
-                              const storage_request& request) -> storage_result {
-      storage_result result;
-      result.node_name = manifest.node_name;
-      result.key = request.key;
-      if (auto iter = records.find(request.key); iter != records.end())
-        result.value = iter->second;
-      else
-        result.value = "<missing:" + request.key + ">";
-      self->println("[storage:{}] served key '{}'", manifest.node_name,
-                    request.key);
-      return result;
-    },
-  };
-}
-
-struct master_state {
-  explicit master_state(event_based_actor* selfptr, node_manifest manifest)
-    : self(selfptr) {
-    nodes.emplace(manifest.node_name, std::move(manifest));
-  }
-
-  topology_snapshot make_topology() const {
-    topology_snapshot snapshot;
-    snapshot.nodes.reserve(nodes.size());
-    for (const auto& [_, node] : nodes)
-      snapshot.nodes.push_back(node);
-    sort_manifests(snapshot.nodes);
-    return snapshot;
-  }
-
-  child_snapshot make_children(const std::string& parent_name) const {
-    child_snapshot snapshot;
-    snapshot.parent = parent_name;
-    for (const auto& [_, node] : nodes) {
-      if (node.parent == parent_name)
-        snapshot.children.push_back(node);
-    }
-    sort_manifests(snapshot.children);
-    return snapshot;
-  }
-
-  behavior make_behavior() {
-    return {
-      [this](master_register_atom, node_manifest manifest) {
-        auto existed = nodes.find(manifest.node_name) != nodes.end();
-        nodes[manifest.node_name] = manifest;
-        self->println("[master] {} node '{}' ({}) parent={} actors=[{}]",
-                      existed ? "updated" : "registered", manifest.node_name,
-                      to_string(manifest.kind),
-                      manifest.parent.empty() ? "<root>" : manifest.parent,
-                      join_strings(manifest.exported_actors));
-        return register_reply{true, existed ? "node updated" : "node registered"};
-      },
-      [this](master_topology_atom) {
-        return make_topology();
-      },
-      [this](master_children_atom, const std::string& parent_name) {
-        return make_children(parent_name);
-      },
-      [this](master_resolve_atom, const std::string& node_name,
-             const std::string& actor_name) -> result<actor_route> {
-        auto iter = nodes.find(node_name);
-        if (iter == nodes.end())
-          return make_error(sec::no_such_key);
-        const auto& manifest = iter->second;
-        auto found = std::find(manifest.exported_actors.begin(),
-                               manifest.exported_actors.end(), actor_name);
-        if (found == manifest.exported_actors.end())
-          return make_error(sec::no_such_key);
-        return actor_route{
-          manifest.node_name,
-          manifest.kind,
-          manifest.host,
-          manifest.port,
-          actor_name,
-          manifest.parent,
-        };
-      },
-    };
-  }
-
-  event_based_actor* self;
-  std::unordered_map<std::string, node_manifest> nodes;
-};
-
-struct region_state {
-  explicit region_state(event_based_actor* selfptr, node_manifest manifest)
-    : self(selfptr), info(std::move(manifest)) {
-    // nop
-  }
-
-  region_snapshot make_snapshot() const {
-    region_snapshot snapshot;
-    snapshot.region_name = info.node_name;
-    for (const auto& [_, child] : children)
-      snapshot.children.push_back(child);
-    sort_manifests(snapshot.children);
-    return snapshot;
-  }
-
-  behavior make_behavior() {
-    return {
-      [this](node_describe_atom) {
-        return info;
-      },
-      [this](region_attach_atom, node_manifest child) {
-        auto existed = children.find(child.node_name) != children.end();
-        children[child.node_name] = child;
-        self->println("[region:{}] {} child '{}' ({})", info.node_name,
-                      existed ? "updated" : "attached", child.node_name,
-                      to_string(child.kind));
-        return register_reply{true, existed ? "child updated" : "child attached"};
-      },
-      [this](region_status_atom) {
-        return make_snapshot();
-      },
-    };
-  }
-
-  event_based_actor* self;
-  node_manifest info;
-  std::unordered_map<std::string, node_manifest> children;
-};
 
 template <class F>
 auto with_retry(F fn, std::chrono::milliseconds total = 4s,

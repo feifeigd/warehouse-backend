@@ -1,4 +1,4 @@
-#include "app.hpp"
+#include "master_state.h"
 
 #include <caf/caf_main.hpp>
 
