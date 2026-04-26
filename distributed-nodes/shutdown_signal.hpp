@@ -11,11 +11,9 @@
 
 #include <atomic>
 #include <csignal>
-#include <iostream>
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 
 // Ctrl+C / SIGTERM 处理器，用于触发节点的优雅关机。
@@ -172,17 +170,7 @@ public:
     if (lifetime > 0) {
       sys.println("[{}] running for {} seconds", role, lifetime);
     } else {
-      sys.println("[{}] press <enter> to stop", role);
-      std::thread([worker, node_name] {
-        std::string dummy;
-        std::getline(std::cin, dummy);
-        anon_send(worker, shutdown_signal_request_atom_v, shutdown_request{
-          node_name,
-          node_name,
-          "console input",
-          shutdown_source::local,
-        });
-      }).detach();
+      sys.println("[{}] press Ctrl+C to stop", role);
     }
 
     // 主线程阻塞等待关机信号。后续可改成 update loop 轮询/驱动。

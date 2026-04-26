@@ -53,7 +53,7 @@ struct node_config : actor_system_config {
       .add(shutdown_children_on_exit, "shutdown-children-on-exit",
            "request child shutdown when this node exits")
       .add(lifetime, "lifetime,l",
-           "node lifetime in seconds, 0 waits for <enter>");
+           "node lifetime in seconds, 0 waits for Ctrl+C");
   }
 };
 
@@ -149,20 +149,14 @@ public:
                        manifest.node_name, manifest.parent);
           return {};
         }
-        auto ok = false;
-        self->request(region_actor, 10s, region_attach_atom_v,
-                      node_registration{manifest, monitor_actor}).receive(
-          [&](const register_reply& reply) {
-            sys_.println("[{}] parent attach: {}", manifest.node_name,
-                         reply.message);
-            ok = reply.ok;
-          },
-          [&](const error& err) {
-            sys_.println("[{}] parent attach failed: {}", manifest.node_name,
-                         to_string(err));
-          }
-        );
-        return ok ? std::optional<bool>{true} : std::nullopt;
+        auto reply = request_actor<register_reply>(
+          self, region_actor, 10s, "parent attach",
+          region_attach_atom_v, node_registration{manifest, monitor_actor});
+        if (!reply)
+          return {};
+        sys_.println("[{}] parent attach: {}", manifest.node_name,
+                     reply->message);
+        return reply->ok ? std::optional<bool>{true} : std::nullopt;
       }
     , 30s, 500ms);
     return static_cast<bool>(attached);
@@ -187,36 +181,25 @@ public:
                   manifest.node_name, manifest.parent);
       return false;
     }
-    auto ok = false;
-    self->request(region_actor, 10s, region_detach_atom_v, manifest.node_name)
-      .receive(
-        [&](const register_reply& reply) {
-          sys_.println("[{}] parent detach: {}", manifest.node_name, reply.message);
-          ok = reply.ok;
-        },
-        [&](const error& err) {
-          sys_.println("[{}] parent detach failed: {}", manifest.node_name,
-                      to_string(err));
-        }
-      );
-    return ok;
+    auto reply = request_actor<register_reply>(
+      self, region_actor, 10s, "parent detach", region_detach_atom_v,
+      manifest.node_name);
+    if (!reply)
+      return false;
+    sys_.println("[{}] parent detach: {}", manifest.node_name, reply->message);
+    return reply->ok;
   }
 
   bool unregister_from_master(const std::string& node_name) {
     if (!master_actor_)
       return false;
     scoped_actor self{sys_};
-    auto ok = false;
-    self->request(master_actor_, 10s, master_unregister_atom_v, node_name).receive(
-      [&](const register_reply& reply) {
-        sys_.println("[{}] unregister from master: {}", cfg_.name, reply.message);
-        ok = reply.ok;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] unregister failed: {}", cfg_.name, to_string(err));
-      }
-    );
-    return ok;
+    auto reply = request_master<register_reply>(
+      self, 10s, "unregister", master_unregister_atom_v, node_name);
+    if (!reply)
+      return false;
+    sys_.println("[{}] unregister from master: {}", cfg_.name, reply->message);
+    return reply->ok;
   }
 
   actor master_actor() const {
@@ -261,33 +244,16 @@ public:
                    node_name);
       return false;
     }
-    auto ok = false;
-    self->request(control, 30s, node_shutdown_atom_v, request).receive(
-      [&](const register_reply& reply) {
-        ok = reply.ok;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] shutdown request to '{}' failed: {}", cfg_.name,
-                     node_name, to_string(err));
-      }
+    auto reply = request_actor<register_reply>(
+      self, control, 30s, "shutdown request to '" + node_name + "'",
+      node_shutdown_atom_v, request
     );
-    return ok;
+    return reply && reply->ok;
   }
 
   std::optional<topology_snapshot> request_topology(scoped_actor& self) {
-    if (!master_actor_)
-      return {};
-    std::optional<topology_snapshot> snapshot;
-    self->request(master_actor_, 10s, master_topology_atom_v).receive(
-      [&](const topology_snapshot& value) {
-        snapshot = value;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] topology request failed: {}", cfg_.name, to_string(err));
-        mark_master_unavailable();
-      }
-    );
-    return snapshot;
+    return request_master<topology_snapshot>(self, 10s, "topology request",
+                                             master_topology_atom_v);
   }
   
   std::optional<actor_route> request_route(scoped_actor& self,
@@ -313,36 +279,46 @@ public:
   
   std::optional<child_snapshot> request_children(scoped_actor& self,
                                                 const std::string& parent_name) {
-    if (!master_actor_)
-      return {};
-    std::optional<child_snapshot> snapshot;
-    self->request(master_actor_, 10s, master_children_atom_v, parent_name).receive(
-      [&](const child_snapshot& value) {
-        snapshot = value;
-      },
-      [&](const error& err) {
-        self->println("children request failed: {}", to_string(err));
-        mark_master_unavailable();
-      }
-    );
-    return snapshot;
+    return request_master<child_snapshot>(self, 10s, "children request",
+                                          master_children_atom_v, parent_name);
   }
 private:
 
-  std::optional<register_reply> request_register(scoped_actor& self,
-                                                const node_registration& registration) {
-    if (!master_actor_)
+  // Helper function to perform retries with a timeout and interval.
+  template <class Result, class... Args>
+  std::optional<Result> request_actor(scoped_actor& self, const actor& target,
+                                      std::chrono::milliseconds timeout,
+                                      const std::string& context,
+                                      Args&&... args) {
+    if (!target)
       return {};
-    std::optional<register_reply> reply;
-    self->request(master_actor_, 10s, master_register_atom_v, registration).receive(
-      [&](const register_reply& value) {
-        reply = value;
+    std::optional<Result> result;
+    self->request(target, timeout, std::forward<Args>(args)...).receive(
+      [&](const Result& value) {
+        result = value;
       },
       [&](const error& err) {
-        self->println("registration failed: {}", to_string(err));
-        mark_master_unavailable();
+        sys_.println("[{}] {} failed: {}", cfg_.name, context, to_string(err));
       }
     );
-    return reply;
+    return result;
+  }
+
+  template <class Result, class... Args>
+  std::optional<Result> request_master(scoped_actor& self,
+                                       std::chrono::milliseconds timeout,
+                                       const std::string& context,
+                                       Args&&... args) {
+    auto result = request_actor<Result>(self, master_actor_, timeout, context,
+                                        std::forward<Args>(args)...);
+    if (!result)
+      mark_master_unavailable();
+    return result;
+  }
+
+  std::optional<register_reply> request_register(scoped_actor& self,
+                                                const node_registration& registration) {
+    return request_master<register_reply>(self, 10s, "registration",
+                                          master_register_atom_v, registration);
   }
 };
