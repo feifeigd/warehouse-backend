@@ -6,15 +6,18 @@ struct rpc_client_state {
   event_based_actor* self;
   std::string master_host;
   uint16_t master_port = 0;
+  std::chrono::milliseconds resolve_timeout;
   actor master_actor;
   std::unordered_map<std::string, actor> actor_cache;
   std::map<actor_addr, std::set<std::string>> cache_keys_by_addr;
 
   rpc_client_state(event_based_actor* selfptr, std::string host, uint16_t port,
+                   std::chrono::milliseconds resolve_wait,
                    actor initial_master = {})
     : self(selfptr),
       master_host(std::move(host)),
       master_port(port),
+      resolve_timeout(resolve_wait),
       master_actor(std::move(initial_master)) {
     // nop
   }
@@ -83,8 +86,8 @@ struct rpc_client_state {
       return;
     }
     auto response = std::make_shared<response_promise>(std::move(promise));
-    self->request(master_actor, 10s, master_resolve_atom_v, node_name,
-                  actor_name).then(
+    self->request(master_actor, resolve_timeout, master_resolve_atom_v,
+                  node_name, actor_name).then(
       [this, key, response](const actor_route& route)
         mutable {
         auto remote = lookup_remote_actor(self->system(), route.host,
@@ -159,17 +162,34 @@ struct rpc_notify_result {
   std::string message;
 };
 
+struct rpc_timeout_options {
+  std::chrono::milliseconds resolve = 10000ms;
+  std::chrono::milliseconds request = 10000ms;
+  std::chrono::milliseconds invalidate = 5000ms;
+};
+
+rpc_timeout_options make_rpc_timeout_options(const node_config& cfg) {
+  return rpc_timeout_options{
+    std::chrono::milliseconds{cfg.rpc_resolve_timeout_ms},
+    std::chrono::milliseconds{cfg.rpc_request_timeout_ms},
+    std::chrono::milliseconds{cfg.rpc_invalidate_timeout_ms},
+  };
+}
+
 actor spawn_rpc_client(actor_system& sys, const node_config& cfg,
                        actor master_actor = {}) {
   return sys.spawn(actor_from_state<rpc_client_state>, cfg.master_host,
-                   cfg.master_port, std::move(master_actor));
+                   cfg.master_port,
+                   std::chrono::milliseconds{cfg.rpc_resolve_timeout_ms},
+                   std::move(master_actor));
 }
 
 rpc_actor_result rpc_resolve_actor(scoped_actor& self, const actor& rpc_client,
                                    const std::string& node_name,
-                                   const std::string& actor_name) {
+                                   const std::string& actor_name,
+                                   std::chrono::milliseconds timeout = 10000ms) {
   rpc_actor_result result;
-  self->request(rpc_client, 10s, rpc_resolve_actor_atom_v, node_name,
+  self->request(rpc_client, timeout, rpc_resolve_actor_atom_v, node_name,
                 actor_name).receive(
     [&](const rpc_actor_result& value) {
       result = value;
@@ -184,8 +204,9 @@ rpc_actor_result rpc_resolve_actor(scoped_actor& self, const actor& rpc_client,
 
 void rpc_invalidate_actor(scoped_actor& self, const actor& rpc_client,
                           const std::string& node_name,
-                          const std::string& actor_name) {
-  self->request(rpc_client, 5s, rpc_invalidate_actor_atom_v, node_name,
+                          const std::string& actor_name,
+                          std::chrono::milliseconds timeout = 5000ms) {
+  self->request(rpc_client, timeout, rpc_invalidate_actor_atom_v, node_name,
                 actor_name).receive(
     [](const register_reply&) {
       // nop
@@ -202,6 +223,20 @@ rpc_notify_result rpc_notify(scoped_actor& self, const actor& rpc_client,
                              const std::string& actor_name,
                              Args&&... args) {
   auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name);
+  if (!resolved.ok)
+    return rpc_notify_result{false, resolved.message};
+  anon_send(resolved.remote, std::forward<Args>(args)...);
+  return rpc_notify_result{true, "sent"};
+}
+
+template <class... Args>
+rpc_notify_result rpc_notify(scoped_actor& self, const actor& rpc_client,
+                             const rpc_timeout_options& timeouts,
+                             const std::string& node_name,
+                             const std::string& actor_name,
+                             Args&&... args) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name,
+                                    timeouts.resolve);
   if (!resolved.ok)
     return rpc_notify_result{false, resolved.message};
   anon_send(resolved.remote, std::forward<Args>(args)...);
@@ -233,6 +268,35 @@ rpc_call_result<register_reply> rpc_command(scoped_actor& self,
   return result;
 }
 
+template <class... Args>
+rpc_call_result<register_reply> rpc_command(scoped_actor& self,
+                                            const actor& rpc_client,
+                                            const rpc_timeout_options& timeouts,
+                                            const std::string& node_name,
+                                            const std::string& actor_name,
+                                            Args&&... args) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name,
+                                    timeouts.resolve);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<register_reply> result;
+  self->request(resolved.remote, timeouts.request,
+                std::forward<Args>(args)...).receive(
+    [&](const register_reply& reply) {
+      result.value = reply;
+      result.message = reply.message;
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, actor_name,
+                           timeouts.invalidate);
+      result.message = "command failed: " + node_name + "/" + actor_name
+                       + " (" + to_string(err) + ")";
+    }
+  );
+  return result;
+}
+
 rpc_call_result<analytics_result> rpc_compute_analyze(
   scoped_actor& self, const actor& rpc_client, const std::string& node_name,
   const analytics_request& request) {
@@ -256,6 +320,32 @@ rpc_call_result<analytics_result> rpc_compute_analyze(
   return result;
 }
 
+rpc_call_result<analytics_result> rpc_compute_analyze(
+  scoped_actor& self, const actor& rpc_client,
+  const rpc_timeout_options& timeouts, const std::string& node_name,
+  const analytics_request& request) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name,
+                                    k_compute_service, timeouts.resolve);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<analytics_result> result;
+  self->request(resolved.remote, timeouts.request, compute_analyze_atom_v,
+                request).receive(
+    [&](const analytics_result& value) {
+      result.value = value;
+      result.message = "ok";
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, k_compute_service,
+                           timeouts.invalidate);
+      result.message = "compute service unavailable: " + node_name + " ("
+                       + to_string(err) + ")";
+    }
+  );
+  return result;
+}
+
 rpc_call_result<storage_result> rpc_storage_lookup(
   scoped_actor& self, const actor& rpc_client, const std::string& node_name,
   const storage_request& request) {
@@ -272,6 +362,32 @@ rpc_call_result<storage_result> rpc_storage_lookup(
     },
     [&](const error& err) {
       rpc_invalidate_actor(self, rpc_client, node_name, k_storage_service);
+      result.message = "storage service unavailable: " + node_name + " ("
+                       + to_string(err) + ")";
+    }
+  );
+  return result;
+}
+
+rpc_call_result<storage_result> rpc_storage_lookup(
+  scoped_actor& self, const actor& rpc_client,
+  const rpc_timeout_options& timeouts, const std::string& node_name,
+  const storage_request& request) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name,
+                                    k_storage_service, timeouts.resolve);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<storage_result> result;
+  self->request(resolved.remote, timeouts.request, storage_lookup_atom_v,
+                request).receive(
+    [&](const storage_result& value) {
+      result.value = value;
+      result.message = "ok";
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, k_storage_service,
+                           timeouts.invalidate);
       result.message = "storage service unavailable: " + node_name + " ("
                        + to_string(err) + ")";
     }

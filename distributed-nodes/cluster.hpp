@@ -14,6 +14,9 @@ struct node_config : actor_system_config {
   std::string storage_key = "profile";
   uint32_t lease_seconds = 15;
   uint32_t node_heartbeat_seconds = 5;
+  uint32_t rpc_resolve_timeout_ms = 10000;
+  uint32_t rpc_request_timeout_ms = 10000;
+  uint32_t rpc_invalidate_timeout_ms = 5000;
   bool shutdown_parent_on_exit = false;
   bool shutdown_children_on_exit = false;
   uint32_t lifetime = 0;
@@ -39,6 +42,12 @@ struct node_config : actor_system_config {
            "seconds before master/region evict a silent node")
       .add(node_heartbeat_seconds, "node-heartbeat-seconds",
            "seconds between node heartbeat refreshes, 0 disables heartbeats")
+      .add(rpc_resolve_timeout_ms, "rpc-resolve-timeout-ms",
+           "RPC actor resolve timeout in milliseconds")
+      .add(rpc_request_timeout_ms, "rpc-request-timeout-ms",
+           "RPC service request timeout in milliseconds")
+      .add(rpc_invalidate_timeout_ms, "rpc-invalidate-timeout-ms",
+           "RPC cache invalidation timeout in milliseconds")
       .add(shutdown_parent_on_exit, "shutdown-parent-on-exit",
            "request parent shutdown when this node exits")
       .add(shutdown_children_on_exit, "shutdown-children-on-exit",

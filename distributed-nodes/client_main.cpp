@@ -51,9 +51,11 @@ void run_client(actor_system& sys, const node_config& cfg) {
     return;
   print_topology(sys, *topology);
   auto rpc_client = spawn_rpc_client(sys, cfg, sys_cluster.master_actor());
+  auto rpc_timeouts = make_rpc_timeout_options(cfg);
 
   auto region_actor = rpc_resolve_actor(self, rpc_client, cfg.region,
-                                        k_region_router);
+                                        k_region_router,
+                                        rpc_timeouts.resolve);
   if (!region_actor.ok) {
     sys.println("[client] could not lookup region actor '{}': {}", cfg.region,
                 region_actor.message);
@@ -73,6 +75,7 @@ void run_client(actor_system& sys, const node_config& cfg) {
   }
 
   auto compute_result = rpc_compute_analyze(self, rpc_client,
+                                            rpc_timeouts,
                                             compute_node->node_name,
                                             analytics_request{{8, 13, 21, 34,
                                                               55}});
@@ -86,6 +89,7 @@ void run_client(actor_system& sys, const node_config& cfg) {
   }
 
   auto storage_result = rpc_storage_lookup(self, rpc_client,
+                                           rpc_timeouts,
                                            storage_node->node_name,
                                            storage_request{cfg.storage_key});
   if (storage_result.ok()) {
