@@ -7,6 +7,10 @@ set(CMAKE_CXX_STANDARD 20)       # 设置 C++ 20
 set(CMAKE_CXX_STANDARD_REQUIRED ON)  # 必须支持该标准
 set(CMAKE_CXX_EXTENSIONS OFF)    # 禁用编译器扩展（如 GNU 扩展）
 
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # -- includes 
 include(FetchContent)
 

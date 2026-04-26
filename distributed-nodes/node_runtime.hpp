@@ -10,11 +10,15 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
                                 std::shared_ptr<shutdown_signal> signal) {
   return {
     [manifest](node_describe_atom) {
-      return manifest;  // 
+      return manifest;  // 请求当前节点的描述信息，包含节点类型、地址、导出接口等。
     },
+
+    // 处理节点关机请求。如果请求来源是父节点且当前节点尚未进入关机流程，则将请求挂起，等当前子树真正关闭完成后再回复。
     [self, manifest, signal](node_shutdown_atom,
                              shutdown_request request) -> result<register_reply> {
       const auto source = request.source;
+      // 如果是父节点请求且已接受，则挂到 completion_waiter，等当前子树真正关闭完成后再回复。
+      const auto wait_for_completion = source == shutdown_source::parent;
       auto source_node = request.source_node.empty() ? "<unknown>"
                                                      : request.source_node;
       auto reason = request.reason;
@@ -24,19 +28,20 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
       auto response = self->make_response_promise();
       self->request(shutdown_actor, 5s, shutdown_signal_request_atom_v,
                     std::move(request)).then(
-        [self, manifest, signal, source, source_node, reason,
-         response](const register_reply& reply) mutable {
+        [self, manifest, signal, source, wait_for_completion, source_node, reason, response](const register_reply& reply) mutable {
           auto accepted = reply.message == "shutdown requested";
           self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
                         to_string(manifest.kind), manifest.node_name,
                         accepted ? "requested" : "already pending",
                         source_node, to_string(source), reason);
-          if (source != shutdown_source::parent) {
+          if (!wait_for_completion || !reply.ok) {
             response.deliver(reply);
             return;
           }
+          // 父节点发起的关机请求，需要等当前子树真正关闭完成后再回复。
           signal->add_completion_waiter(response);
         },
+        
         [response](const error& err) mutable {
           response.deliver(register_reply{
             false,
@@ -44,9 +49,6 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
           });
         }
       );
-      if (source == shutdown_source::parent) {
-        return response;
-      }
       return response;
     },
   };
@@ -148,8 +150,6 @@ void run_managed_node_lifecycle(actor_system& sys, const node_config& cfg,
     shutdown_actors(actors);
     propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
   } while (false);
-
-  shutdown_actors(actors);
 }
 
 void run_master_node_lifecycle(actor_system& sys, const node_config& cfg,

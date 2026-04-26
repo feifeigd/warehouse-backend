@@ -395,8 +395,6 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_ATOM(distributed_nodes, rpc_invalidate_actor_atom)
   CAF_ADD_ATOM(distributed_nodes, shutdown_signal_request_atom)
   CAF_ADD_ATOM(distributed_nodes, shutdown_signal_wait_atom)
-  CAF_ADD_ATOM(distributed_nodes, shutdown_signal_complete_atom)
-  CAF_ADD_ATOM(distributed_nodes, shutdown_signal_completion_wait_atom)
   CAF_ADD_ATOM(distributed_nodes, shutdown_signal_poll_atom)
   CAF_ADD_ATOM(distributed_nodes, shutdown_signal_lifetime_atom)
 
