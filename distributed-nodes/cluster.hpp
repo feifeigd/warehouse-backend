@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "node_types.hpp"
 #include "node_config.hpp"
 
 // cluster: main-thread synchronous client.

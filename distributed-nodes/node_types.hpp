@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include "node_config.hpp"
+
 #include <caf/actor_from_state.hpp>
 #include <caf/actor_registry.hpp>
 #include <caf/actor_system.hpp>
@@ -531,6 +533,10 @@ node_manifest make_manifest(node_kind kind, std::string node_name,
   manifest.parent = std::move(parent);
   manifest.exported_actors = exported_actor_names(kind);
   return manifest;
+}
+
+node_manifest make_manifest(const node_config& cfg, node_kind kind) {
+  return make_manifest(kind, cfg.name, cfg.host, cfg.port, cfg.parent);
 }
 
 std::string join_strings(const std::vector<std::string>& xs) {

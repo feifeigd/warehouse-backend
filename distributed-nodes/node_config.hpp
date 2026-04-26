@@ -1,8 +1,12 @@
 #pragma once
 
-#include "node_types.hpp"
+#include <caf/actor_system_config.hpp>
 
-struct node_config : actor_system_config {
+#include <cstdint>
+#include <string>
+#include <utility>
+
+struct node_config : caf::actor_system_config {
   std::string name;
   std::string host = "127.0.0.1";
   std::string bind;
@@ -32,7 +36,7 @@ struct node_config : actor_system_config {
       port(default_port),
       parent(std::move(default_parent)),
       region(std::move(default_region)) {
-    opt_group{custom_options_, "global"}
+      opt_group{custom_options_, "global"}
       .add(name, "name,n", "logical node name")
       .add(host, "host,H", "advertised host for the current node")
       .add(bind, "bind,B", "bind address for the local listener")
