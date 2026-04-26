@@ -59,9 +59,10 @@ struct rpc_client_state {
       promise.deliver(failure("master unavailable"));
       return;
     }
+    auto response = std::make_shared<response_promise>(std::move(promise));
     self->request(master_actor, 10s, master_resolve_atom_v, node_name,
                   actor_name).then(
-      [this, key, promise = std::move(promise)](const actor_route& route)
+      [this, key, response](const actor_route& route)
         mutable {
         auto remote = lookup_remote_actor(self->system(), route.host,
                                           route.port, route.actor_name, 0ms,
@@ -70,20 +71,20 @@ struct rpc_client_state {
           auto message = "service unavailable: " + route.node_name + "/"
                          + route.actor_name;
           self->println("[rpc] {}", message);
-          promise.deliver(failure(std::move(message)));
+          response->deliver(failure(std::move(message)));
           return;
         }
         actor_cache[key] = remote;
-        promise.deliver(success(remote, "resolved"));
+        response->deliver(success(remote, "resolved"));
       },
-      [this, node_name, actor_name, promise = std::move(promise)](
+      [this, node_name, actor_name, response](
         const error& err) mutable {
         if (err != sec::no_such_key)
           master_actor = {};
         auto message = "service not registered: " + node_name + "/"
                        + actor_name + " (" + to_string(err) + ")";
         self->println("[rpc] {}", message);
-        promise.deliver(failure(std::move(message)));
+        response->deliver(failure(std::move(message)));
       }
     );
   }
