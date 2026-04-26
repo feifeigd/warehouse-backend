@@ -448,13 +448,16 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
     },
     [self, manifest, signal](node_shutdown_atom,
                              shutdown_request request) -> result<register_reply> {
-      auto accepted = signal->request_shutdown(request);
+      const auto source = request.source;
+      auto source_node = request.source_node.empty() ? "<unknown>"
+                                                     : request.source_node;
+      auto reason = request.reason;
+      auto accepted = signal->request_shutdown(std::move(request));
       self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
                     to_string(manifest.kind), manifest.node_name,
                     accepted ? "requested" : "already pending",
-                    request.source_node.empty() ? "<unknown>" : request.source_node,
-                    to_string(request.source), request.reason);
-      if (request.source == shutdown_source::parent) {
+                    source_node, to_string(source), reason);
+      if (source == shutdown_source::parent) {
         auto waiter = self->make_response_promise();
         signal->add_completion_waiter(waiter);
         return waiter;
