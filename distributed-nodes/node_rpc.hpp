@@ -32,15 +32,23 @@ struct rpc_client_state {
 
   bool ensure_master() {
     if (master_actor)
-      return true;  // 不保证没失效啊
+      return true;
     master_actor = lookup_remote_actor(self->system(), master_host, master_port,
                                        k_master_control, 0ms, 0ms);
     if (!master_actor) {
-      self->println("[rpc] failed to connect master at {}:{}", master_host,
+      self->println("[rpc] master unavailable at {}:{}", master_host,
                     master_port);
       return false;
     }
     return true;
+  }
+
+  rpc_actor_result failure(std::string message) const {
+    return rpc_actor_result{false, {}, std::move(message)};
+  }
+
+  rpc_actor_result success(actor remote, std::string message) const {
+    return rpc_actor_result{true, std::move(remote), std::move(message)};
   }
 
   void resolve_remote_actor(const std::string& node_name,
@@ -48,7 +56,7 @@ struct rpc_client_state {
                             const std::string& key,
                             response_promise promise) {
     if (!ensure_master()) {
-      promise.deliver(actor{});
+      promise.deliver(failure("master unavailable"));
       return;
     }
     self->request(master_actor, 10s, master_resolve_atom_v, node_name,
@@ -59,32 +67,34 @@ struct rpc_client_state {
                                           route.port, route.actor_name, 0ms,
                                           0ms);
         if (!remote) {
-          self->println("[rpc] failed to lookup {}:{} at {}:{}",
-                        route.node_name, route.actor_name, route.host,
-                        route.port);
-          promise.deliver(actor{});
+          auto message = "service unavailable: " + route.node_name + "/"
+                         + route.actor_name;
+          self->println("[rpc] {}", message);
+          promise.deliver(failure(std::move(message)));
           return;
         }
         actor_cache[key] = remote;
-        promise.deliver(remote);
+        promise.deliver(success(remote, "resolved"));
       },
-      [this, promise = std::move(promise)](const error& err) mutable {
-        self->println("[rpc] resolve failed: {}", to_string(err));
+      [this, node_name, actor_name, promise = std::move(promise)](
+        const error& err) mutable {
         if (err != sec::no_such_key)
           master_actor = {};
-        promise.deliver(actor{});
+        auto message = "service not registered: " + node_name + "/"
+                       + actor_name + " (" + to_string(err) + ")";
+        self->println("[rpc] {}", message);
+        promise.deliver(failure(std::move(message)));
       }
     );
   }
 
   behavior make_behavior() {
     return {
-      // 注意：master控制器不应该频繁调用这个接口，最好是有个本地缓存，定期刷新
       [this](rpc_resolve_actor_atom, const std::string& node_name,
-             const std::string& actor_name) -> result<actor> {
+             const std::string& actor_name) -> result<rpc_actor_result> {
         const auto key = cache_key(node_name, actor_name);
         if (auto cached = cached_actor(key))
-          return cached;
+          return success(cached, "cached");
         auto promise = self->make_response_promise();
         resolve_remote_actor(node_name, actor_name, key, promise);
         return promise;
@@ -98,26 +108,37 @@ struct rpc_client_state {
   }
 };
 
+template <class T>
+struct rpc_call_result {
+  std::optional<T> value;
+  std::string message;
+
+  bool ok() const {
+    return value.has_value();
+  }
+};
+
 actor spawn_rpc_client(actor_system& sys, const node_config& cfg,
                        actor master_actor = {}) {
   return sys.spawn(actor_from_state<rpc_client_state>, cfg.master_host,
                    cfg.master_port, std::move(master_actor));
 }
 
-actor rpc_resolve_actor(scoped_actor& self, const actor& rpc_client,
-                        const std::string& node_name,
-                        const std::string& actor_name) {
-  actor remote;
+rpc_actor_result rpc_resolve_actor(scoped_actor& self, const actor& rpc_client,
+                                   const std::string& node_name,
+                                   const std::string& actor_name) {
+  rpc_actor_result result;
   self->request(rpc_client, 10s, rpc_resolve_actor_atom_v, node_name,
                 actor_name).receive(
-    [&](const actor& value) {
-      remote = value;
+    [&](const rpc_actor_result& value) {
+      result = value;
     },
-    [&](const error&) {
-      remote = {};
+    [&](const error& err) {
+      result = rpc_actor_result{false, {}, "rpc resolve failed: "
+                                           + to_string(err)};
     }
   );
-  return remote;
+  return result;
 }
 
 void rpc_invalidate_actor(scoped_actor& self, const actor& rpc_client,
@@ -134,44 +155,48 @@ void rpc_invalidate_actor(scoped_actor& self, const actor& rpc_client,
   );
 }
 
-std::optional<analytics_result> rpc_compute_analyze(
+rpc_call_result<analytics_result> rpc_compute_analyze(
   scoped_actor& self, const actor& rpc_client, const std::string& node_name,
-  analytics_request request) {
-  auto remote = rpc_resolve_actor(self, rpc_client, node_name,
-                                  k_compute_service);
-  if (!remote)
-    return {};
-  std::optional<analytics_result> result;
-  self->request(remote, 10s, compute_analyze_atom_v, std::move(request))
-    .receive(
-      [&](const analytics_result& value) {
-        result = value;
-      },
-      [&](const error&) {
-        rpc_invalidate_actor(self, rpc_client, node_name, k_compute_service);
-        result = {};
-      }
-    );
+  const analytics_request& request) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name,
+                                    k_compute_service);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<analytics_result> result;
+  self->request(resolved.remote, 10s, compute_analyze_atom_v, request).receive(
+    [&](const analytics_result& value) {
+      result.value = value;
+      result.message = "ok";
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, k_compute_service);
+      result.message = "compute service unavailable: " + node_name + " ("
+                       + to_string(err) + ")";
+    }
+  );
   return result;
 }
 
-std::optional<storage_result> rpc_storage_lookup(
+rpc_call_result<storage_result> rpc_storage_lookup(
   scoped_actor& self, const actor& rpc_client, const std::string& node_name,
-  storage_request request) {
-  auto remote = rpc_resolve_actor(self, rpc_client, node_name,
-                                  k_storage_service);
-  if (!remote)
-    return {};
-  std::optional<storage_result> result;
-  self->request(remote, 10s, storage_lookup_atom_v, std::move(request))
-    .receive(
-      [&](const storage_result& value) {
-        result = value;
-      },
-      [&](const error&) {
-        rpc_invalidate_actor(self, rpc_client, node_name, k_storage_service);
-        result = {};
-      }
-    );
+  const storage_request& request) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name,
+                                    k_storage_service);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<storage_result> result;
+  self->request(resolved.remote, 10s, storage_lookup_atom_v, request).receive(
+    [&](const storage_result& value) {
+      result.value = value;
+      result.message = "ok";
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, k_storage_service);
+      result.message = "storage service unavailable: " + node_name + " ("
+                       + to_string(err) + ")";
+    }
+  );
   return result;
 }

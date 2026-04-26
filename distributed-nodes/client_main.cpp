@@ -54,11 +54,12 @@ void run_client(actor_system& sys, const node_config& cfg) {
 
   auto region_actor = rpc_resolve_actor(self, rpc_client, cfg.region,
                                         k_region_router);
-  if (!region_actor) {
-    sys.println("[client] could not lookup region actor '{}'", cfg.region);
+  if (!region_actor.ok) {
+    sys.println("[client] could not lookup region actor '{}': {}", cfg.region,
+                region_actor.message);
     return;
   }
-  print_region_status(self, sys, region_actor);
+  print_region_status(self, sys, region_actor.remote);
 
   auto children = sys_cluster.request_children(self, cfg.region);
   if (!children)
@@ -75,22 +76,25 @@ void run_client(actor_system& sys, const node_config& cfg) {
                                             compute_node->node_name,
                                             analytics_request{{8, 13, 21, 34,
                                                               55}});
-  if (compute_result) {
+  if (compute_result.ok()) {
     sys.println("[client] compute {} -> count={} sum={} max={}",
-                compute_result->node_name, compute_result->count,
-                compute_result->sum, compute_result->max);
+                compute_result.value->node_name, compute_result.value->count,
+                compute_result.value->sum, compute_result.value->max);
   } else {
-    sys.println("[client] compute request failed");
+    sys.println("[client] compute request failed: {}",
+                compute_result.message);
   }
 
   auto storage_result = rpc_storage_lookup(self, rpc_client,
                                            storage_node->node_name,
                                            storage_request{cfg.storage_key});
-  if (storage_result) {
-    sys.println("[client] storage {} -> {}={}", storage_result->node_name,
-                storage_result->key, storage_result->value);
+  if (storage_result.ok()) {
+    sys.println("[client] storage {} -> {}={}",
+                storage_result.value->node_name, storage_result.value->key,
+                storage_result.value->value);
   } else {
-    sys.println("[client] storage request failed");
+    sys.println("[client] storage request failed: {}",
+                storage_result.message);
   }
 }
 

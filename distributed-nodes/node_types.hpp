@@ -221,6 +221,21 @@ bool inspect(Inspector& f, register_reply& x) {
   );
 }
 
+struct rpc_actor_result {
+  bool ok = false;
+  actor remote;
+  std::string message;
+};
+
+template <class Inspector>
+bool inspect(Inspector& f, rpc_actor_result& x) {
+  return f.object(x).fields(
+    f.field("ok", x.ok),
+    f.field("remote", x.remote),
+    f.field("message", x.message)
+  );
+}
+
 
 struct actor_route {
   std::string node_name;
@@ -350,6 +365,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_TYPE_ID(distributed_nodes, (node_registration))
   CAF_ADD_TYPE_ID(distributed_nodes, (shutdown_request))
   CAF_ADD_TYPE_ID(distributed_nodes, (register_reply))
+  CAF_ADD_TYPE_ID(distributed_nodes, (rpc_actor_result))
   CAF_ADD_TYPE_ID(distributed_nodes, (actor_route))
   CAF_ADD_TYPE_ID(distributed_nodes, (topology_snapshot))
   CAF_ADD_TYPE_ID(distributed_nodes, (child_snapshot))
