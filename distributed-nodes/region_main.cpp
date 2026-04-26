@@ -10,7 +10,8 @@ struct region_config : node_config {
 
 void run_region(actor_system& sys, const node_config& cfg) {
   cluster sys_cluster(sys, cfg);
-  auto manifest = make_manifest(cfg, node_kind::region);
+  auto manifest = make_manifest(node_kind::region, cfg.name, cfg.host, cfg.port,
+                                cfg.parent);
   auto shutdown = std::make_shared<shutdown_signal>();
   shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);

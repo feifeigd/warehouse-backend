@@ -520,6 +520,19 @@ std::vector<std::string> exported_actor_names(node_kind kind) {
   return {};
 }
 
+node_manifest make_manifest(node_kind kind, std::string node_name,
+                            std::string host, uint16_t port,
+                            std::string parent = {}) {
+  node_manifest manifest;
+  manifest.kind = kind;
+  manifest.node_name = std::move(node_name);
+  manifest.host = std::move(host);
+  manifest.port = port;
+  manifest.parent = std::move(parent);
+  manifest.exported_actors = exported_actor_names(kind);
+  return manifest;
+}
+
 std::string join_strings(const std::vector<std::string>& xs) {
   if (xs.empty())
     return "<none>";

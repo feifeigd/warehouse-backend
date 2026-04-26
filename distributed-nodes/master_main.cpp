@@ -9,7 +9,8 @@ struct master_config : node_config {
 };
 
 void run_master(actor_system& sys, const node_config& cfg) {
-  auto manifest = make_manifest(cfg, node_kind::master);
+  auto manifest = make_manifest(node_kind::master, cfg.name, cfg.host, cfg.port,
+                                cfg.parent);
   auto shutdown = std::make_shared<shutdown_signal>();
   shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);

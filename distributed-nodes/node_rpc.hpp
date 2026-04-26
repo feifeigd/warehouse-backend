@@ -1,6 +1,6 @@
 #pragma once
 
-#include "cluster.hpp"
+#include "node_config.hpp"
 
 struct rpc_client_state {
   event_based_actor* self;
