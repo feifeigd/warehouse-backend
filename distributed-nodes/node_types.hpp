@@ -41,6 +41,16 @@ enum class shutdown_source : uint8_t {
   external,
 };
 
+enum class rpc_error_code : uint8_t {
+  none = 0,
+  master_unavailable,
+  service_not_registered,
+  service_unavailable,
+  resolve_failed,
+  request_timeout,
+  request_failed,
+};
+
 std::string to_string(node_kind x) {
   switch (x) {
     case node_kind::master:
@@ -157,6 +167,91 @@ bool inspect(Inspector& f, shutdown_source& x) {
   return caf::default_enum_inspect(f, x);
 }
 
+std::string to_string(rpc_error_code x) {
+  switch (x) {
+    case rpc_error_code::none:
+      return "none";
+    case rpc_error_code::master_unavailable:
+      return "master_unavailable";
+    case rpc_error_code::service_not_registered:
+      return "service_not_registered";
+    case rpc_error_code::service_unavailable:
+      return "service_unavailable";
+    case rpc_error_code::resolve_failed:
+      return "resolve_failed";
+    case rpc_error_code::request_timeout:
+      return "request_timeout";
+    case rpc_error_code::request_failed:
+      return "request_failed";
+  }
+  return "unknown";
+}
+
+bool from_string(std::string_view str, rpc_error_code& x) {
+  if (str == "none") {
+    x = rpc_error_code::none;
+    return true;
+  }
+  if (str == "master_unavailable") {
+    x = rpc_error_code::master_unavailable;
+    return true;
+  }
+  if (str == "service_not_registered") {
+    x = rpc_error_code::service_not_registered;
+    return true;
+  }
+  if (str == "service_unavailable") {
+    x = rpc_error_code::service_unavailable;
+    return true;
+  }
+  if (str == "resolve_failed") {
+    x = rpc_error_code::resolve_failed;
+    return true;
+  }
+  if (str == "request_timeout") {
+    x = rpc_error_code::request_timeout;
+    return true;
+  }
+  if (str == "request_failed") {
+    x = rpc_error_code::request_failed;
+    return true;
+  }
+  return false;
+}
+
+bool from_integer(uint8_t value, rpc_error_code& x) {
+  switch (value) {
+    case 0:
+      x = rpc_error_code::none;
+      return true;
+    case 1:
+      x = rpc_error_code::master_unavailable;
+      return true;
+    case 2:
+      x = rpc_error_code::service_not_registered;
+      return true;
+    case 3:
+      x = rpc_error_code::service_unavailable;
+      return true;
+    case 4:
+      x = rpc_error_code::resolve_failed;
+      return true;
+    case 5:
+      x = rpc_error_code::request_timeout;
+      return true;
+    case 6:
+      x = rpc_error_code::request_failed;
+      return true;
+    default:
+      return false;
+  }
+}
+
+template <class Inspector>
+bool inspect(Inspector& f, rpc_error_code& x) {
+  return caf::default_enum_inspect(f, x);
+}
+
 struct node_manifest {
   node_kind kind = node_kind::master;
   std::string node_name;
@@ -224,6 +319,7 @@ bool inspect(Inspector& f, register_reply& x) {
 struct rpc_actor_result {
   bool ok = false;
   actor remote;
+  rpc_error_code code = rpc_error_code::none;
   std::string message;
 };
 
@@ -232,6 +328,7 @@ bool inspect(Inspector& f, rpc_actor_result& x) {
   return f.object(x).fields(
     f.field("ok", x.ok),
     f.field("remote", x.remote),
+    f.field("code", x.code),
     f.field("message", x.message)
   );
 }
@@ -361,6 +458,7 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
 
   CAF_ADD_TYPE_ID(distributed_nodes, (node_kind))
   CAF_ADD_TYPE_ID(distributed_nodes, (shutdown_source))
+  CAF_ADD_TYPE_ID(distributed_nodes, (rpc_error_code))
   CAF_ADD_TYPE_ID(distributed_nodes, (node_manifest))
   CAF_ADD_TYPE_ID(distributed_nodes, (node_registration))
   CAF_ADD_TYPE_ID(distributed_nodes, (shutdown_request))

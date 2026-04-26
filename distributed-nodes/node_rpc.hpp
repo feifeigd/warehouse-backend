@@ -69,12 +69,17 @@ struct rpc_client_state {
     return true;
   }
 
-  rpc_actor_result failure(std::string message) const {
-    return rpc_actor_result{false, {}, std::move(message)};
+  rpc_actor_result failure(rpc_error_code code, std::string message) const {
+    return rpc_actor_result{false, {}, code, std::move(message)};
   }
 
   rpc_actor_result success(actor remote, std::string message) const {
-    return rpc_actor_result{true, std::move(remote), std::move(message)};
+    return rpc_actor_result{
+      true,
+      std::move(remote),
+      rpc_error_code::none,
+      std::move(message),
+    };
   }
 
   void resolve_remote_actor(const std::string& node_name,
@@ -82,7 +87,8 @@ struct rpc_client_state {
                             const std::string& key,
                             response_promise promise) {
     if (!ensure_master()) {
-      promise.deliver(failure("master unavailable"));
+      promise.deliver(failure(rpc_error_code::master_unavailable,
+                              "master unavailable"));
       return;
     }
     auto response = std::make_shared<response_promise>(std::move(promise));
@@ -97,7 +103,8 @@ struct rpc_client_state {
           auto message = "service unavailable: " + route.node_name + "/"
                          + route.actor_name;
           self->println("[rpc] {}", message);
-          response->deliver(failure(std::move(message)));
+          response->deliver(failure(rpc_error_code::service_unavailable,
+                                    std::move(message)));
           return;
         }
         cache_actor(key, remote);
@@ -107,10 +114,13 @@ struct rpc_client_state {
         const error& err) mutable {
         if (err != sec::no_such_key)
           master_actor = {};
+        auto code = err == sec::no_such_key
+                    ? rpc_error_code::service_not_registered
+                    : rpc_error_code::master_unavailable;
         auto message = "service not registered: " + node_name + "/"
                        + actor_name + " (" + to_string(err) + ")";
         self->println("[rpc] {}", message);
-        response->deliver(failure(std::move(message)));
+        response->deliver(failure(code, std::move(message)));
       }
     );
   }
@@ -150,6 +160,7 @@ struct rpc_client_state {
 template <class T>
 struct rpc_call_result {
   std::optional<T> value;
+  rpc_error_code code = rpc_error_code::none;
   std::string message;
 
   bool ok() const {
@@ -159,6 +170,7 @@ struct rpc_call_result {
 
 struct rpc_notify_result {
   bool ok = false;
+  rpc_error_code code = rpc_error_code::none;
   std::string message;
 };
 
@@ -220,8 +232,12 @@ rpc_actor_result rpc_resolve_actor(scoped_actor& self, const actor& rpc_client,
       result = value;
     },
     [&](const error& err) {
-      result = rpc_actor_result{false, {}, "rpc resolve failed: "
-                                           + to_string(err)};
+      result = rpc_actor_result{
+        false,
+        {},
+        rpc_error_code::resolve_failed,
+        "rpc resolve failed: " + to_string(err),
+      };
     }
   );
   return result;
@@ -260,9 +276,14 @@ rpc_notify_result rpc_notify(scoped_actor& self, const actor& rpc_client,
   auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name,
                                     timeouts.resolve);
   if (!resolved.ok)
-    return rpc_notify_result{false, resolved.message};
+    return rpc_notify_result{false, resolved.code, resolved.message};
   anon_send(resolved.remote, std::forward<Args>(args)...);
-  return rpc_notify_result{true, "sent"};
+  return rpc_notify_result{true, rpc_error_code::none, "sent"};
+}
+
+rpc_error_code rpc_request_error_code(const error& err) {
+  return err == sec::request_timeout ? rpc_error_code::request_timeout
+                                     : rpc_error_code::request_failed;
 }
 
 template <class Result, class... Args>
@@ -276,18 +297,20 @@ rpc_call_result<Result> rpc_request(scoped_actor& self,
   auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name,
                                     timeouts.resolve);
   if (!resolved.ok)
-    return {{}, resolved.message};
+    return {{}, resolved.code, resolved.message};
 
   rpc_call_result<Result> result;
   self->request(resolved.remote, timeouts.request,
                 std::forward<Args>(args)...).receive(
     [&](const Result& value) {
       result.value = value;
+      result.code = rpc_error_code::none;
       result.message = "ok";
     },
     [&](const error& err) {
       rpc_invalidate_actor(self, rpc_client, node_name, actor_name,
                            timeouts.invalidate);
+      result.code = rpc_request_error_code(err);
       result.message = failure_context + ": " + node_name + "/" + actor_name
                        + " (" + to_string(err) + ")";
     }
