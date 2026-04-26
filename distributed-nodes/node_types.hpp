@@ -375,6 +375,8 @@ CAF_BEGIN_TYPE_ID_BLOCK(distributed_nodes, first_custom_type_id)
   CAF_ADD_ATOM(distributed_nodes, region_status_atom)
   CAF_ADD_ATOM(distributed_nodes, compute_analyze_atom)
   CAF_ADD_ATOM(distributed_nodes, storage_lookup_atom)
+  CAF_ADD_ATOM(distributed_nodes, rpc_resolve_actor_atom)
+  CAF_ADD_ATOM(distributed_nodes, rpc_invalidate_actor_atom)
 
 CAF_END_TYPE_ID_BLOCK(distributed_nodes)
 

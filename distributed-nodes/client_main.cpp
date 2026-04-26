@@ -21,21 +21,6 @@ void print_topology(actor_system& sys, const topology_snapshot& topology) {
   }
 }
 
-actor resolve_remote_actor(cluster& sys_cluster, scoped_actor& self,
-                           actor_system& sys, const std::string& node_name,
-                           const std::string& actor_name,
-                           const char* actor_label) {
-  auto route = sys_cluster.request_route(self, node_name, actor_name);
-  if (!route)
-    return {};
-  auto remote_actor = sys_cluster.lookup_remote_named_actor(route->host,
-                                                            route->port,
-                                                            route->actor_name);
-  if (!remote_actor)
-    sys.println("[client] could not lookup {} '{}'", actor_label, node_name);
-  return remote_actor;
-}
-
 void print_region_status(scoped_actor& self, actor_system& sys,
                          const actor& region_actor) {
   self->request(region_actor, 10s, region_status_atom_v).receive(
@@ -65,11 +50,14 @@ void run_client(actor_system& sys, const node_config& cfg) {
   if (!topology)
     return;
   print_topology(sys, *topology);
+  auto rpc_client = spawn_rpc_client(sys, cfg, sys_cluster.master_actor());
 
-  auto region_actor = resolve_remote_actor(sys_cluster, self, sys, cfg.region,
-                                           k_region_router, "region actor");
-  if (!region_actor)
+  auto region_actor = rpc_resolve_actor(self, rpc_client, cfg.region,
+                                        k_region_router);
+  if (!region_actor) {
+    sys.println("[client] could not lookup region actor '{}'", cfg.region);
     return;
+  }
   print_region_status(self, sys, region_actor);
 
   auto children = sys_cluster.request_children(self, cfg.region);
@@ -83,40 +71,27 @@ void run_client(actor_system& sys, const node_config& cfg) {
     return;
   }
 
-  auto compute_actor = resolve_remote_actor(sys_cluster, self, sys,
+  auto compute_result = rpc_compute_analyze(self, rpc_client,
                                             compute_node->node_name,
-                                            k_compute_service,
-                                            "compute actor");
-  auto storage_actor = resolve_remote_actor(sys_cluster, self, sys,
-                                            storage_node->node_name,
-                                            k_storage_service,
-                                            "storage actor");
-  if (!compute_actor || !storage_actor)
-    return;
+                                            analytics_request{{8, 13, 21, 34,
+                                                              55}});
+  if (compute_result) {
+    sys.println("[client] compute {} -> count={} sum={} max={}",
+                compute_result->node_name, compute_result->count,
+                compute_result->sum, compute_result->max);
+  } else {
+    sys.println("[client] compute request failed");
+  }
 
-  self->request(compute_actor, 10s, compute_analyze_atom_v,
-                analytics_request{{8, 13, 21, 34, 55}})
-    .receive(
-      [&](const analytics_result& result) {
-        sys.println("[client] compute {} -> count={} sum={} max={}",
-                    result.node_name, result.count, result.sum, result.max);
-      },
-      [&](const error& err) {
-        sys.println("[client] compute request failed: {}", to_string(err));
-      }
-    );
-
-  self->request(storage_actor, 10s, storage_lookup_atom_v,
-                storage_request{cfg.storage_key})
-    .receive(
-      [&](const storage_result& result) {
-        sys.println("[client] storage {} -> {}={}", result.node_name, result.key,
-                    result.value);
-      },
-      [&](const error& err) {
-        sys.println("[client] storage request failed: {}", to_string(err));
-      }
-    );
+  auto storage_result = rpc_storage_lookup(self, rpc_client,
+                                           storage_node->node_name,
+                                           storage_request{cfg.storage_key});
+  if (storage_result) {
+    sys.println("[client] storage {} -> {}={}", storage_result->node_name,
+                storage_result->key, storage_result->value);
+  } else {
+    sys.println("[client] storage request failed");
+  }
 }
 
 void caf_main(actor_system& sys, const client_config& cfg) {

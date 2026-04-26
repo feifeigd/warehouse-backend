@@ -59,6 +59,8 @@ node_manifest make_manifest(const node_config& cfg, node_kind kind) {
   return manifest;
 }
 
+// cluster: main-thread synchronous client.
+// Do not share across actors.
 class cluster{
   actor_system& sys_;
   const node_config& cfg_;
