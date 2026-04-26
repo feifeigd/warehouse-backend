@@ -96,21 +96,13 @@ struct node_heartbeat_state {
 
   void reconnect_master() {
     master_actor = {};
-    auto nid = self->system().middleman().connect(master_host, master_port);
-    if (!nid) {
-      self->println("[{}] master reconnect failed: {}", manifest.node_name,
-                    to_string(nid.error()));
+    master_actor = lookup_remote_actor(self->system(), master_host, master_port,
+                                       k_master_control, 0ms, 0ms);
+    if (!master_actor) {
+      self->println("[{}] master reconnect failed", manifest.node_name);
       schedule_next();
       return;
     }
-    auto remote = self->system().middleman().remote_lookup(k_master_control,
-                                                           *nid);
-    if (!remote) {
-      self->println("[{}] master lookup failed", manifest.node_name);
-      schedule_next();
-      return;
-    }
-    master_actor = actor_cast<actor>(remote);
     register_with_master();
   }
 
@@ -164,21 +156,13 @@ struct node_heartbeat_state {
   }
 
   void lookup_parent_region(const actor_route& route) {
-    auto nid = self->system().middleman().connect(route.host, route.port);
-    if (!nid) {
-      self->println("[{}] parent reconnect failed: {}", manifest.node_name,
-                    to_string(nid.error()));
+    parent_actor = lookup_remote_actor(self->system(), route.host, route.port,
+                                       route.actor_name, 0ms, 0ms);
+    if (!parent_actor) {
+      self->println("[{}] parent reconnect failed", manifest.node_name);
       schedule_next();
       return;
     }
-    auto remote = self->system().middleman().remote_lookup(route.actor_name,
-                                                           *nid);
-    if (!remote) {
-      self->println("[{}] parent lookup failed", manifest.node_name);
-      schedule_next();
-      return;
-    }
-    parent_actor = actor_cast<actor>(remote);
     attach_to_parent_region();
   }
 

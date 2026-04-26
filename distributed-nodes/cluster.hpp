@@ -112,14 +112,7 @@ public:
 
   actor lookup_remote_named_actor(const std::string& host,
                                   uint16_t port, const std::string& actor_name) {
-    auto nid = with_retry([&] { return sys_.middleman().connect(host, port); });
-    if (!nid)
-      return {};
-    auto actor_ptr = with_retry(
-      [&] { return sys_.middleman().remote_lookup(actor_name, *nid); });
-    if (!actor_ptr)
-      return {};
-    return actor_cast<actor>(actor_ptr);
+    return lookup_remote_actor(sys_, host, port, actor_name);
   }
 
   bool attach_to_parent_region(const node_manifest& manifest,
@@ -239,51 +232,6 @@ public:
       return {};
     }
     return region_actor;
-  }
-
-  bool heartbeat_master(const std::string& node_name) {
-    if (!master_actor_ && !connect_to_master())
-      return false;
-    scoped_actor self{sys_};
-    auto ok = false;
-    self->request(master_actor_, 10s, master_heartbeat_atom_v, node_name).receive(
-      [&](const register_reply& reply) {
-        if (!reply.ok) {
-          sys_.println("[{}] master heartbeat rejected: {}", node_name,
-                       reply.message);
-        }
-        ok = reply.ok;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] master heartbeat failed: {}", node_name,
-                     to_string(err));
-        mark_master_unavailable();
-      }
-    );
-    return ok;
-  }
-
-  bool heartbeat_parent_region(const node_manifest& manifest) {
-    auto parent_actor = lookup_parent_region_actor(manifest);
-    if (!parent_actor)
-      return false;
-    scoped_actor self{sys_};
-    auto ok = false;
-    self->request(parent_actor, 10s, region_heartbeat_atom_v,
-                  manifest.node_name).receive(
-      [&](const register_reply& reply) {
-        if (!reply.ok) {
-          sys_.println("[{}] parent heartbeat rejected: {}",
-                       manifest.node_name, reply.message);
-        }
-        ok = reply.ok;
-      },
-      [&](const error& err) {
-        sys_.println("[{}] parent heartbeat failed: {}", manifest.node_name,
-                     to_string(err));
-      }
-    );
-    return ok;
   }
 
   actor lookup_node_control_actor(scoped_actor& self,

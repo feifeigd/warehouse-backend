@@ -452,3 +452,19 @@ auto with_retry(F fn, std::chrono::milliseconds total = 4s,
   return result;
 }
 
+actor lookup_remote_actor(actor_system& sys, const std::string& host,
+                          uint16_t port, const std::string& actor_name,
+                          std::chrono::milliseconds total = 4s,
+                          std::chrono::milliseconds step = 100ms) {
+  auto nid = with_retry([&] { return sys.middleman().connect(host, port); },
+                        total, step);
+  if (!nid)
+    return {};
+  auto actor_ptr = with_retry(
+    [&] { return sys.middleman().remote_lookup(actor_name, *nid); },
+    total, step);
+  if (!actor_ptr)
+    return {};
+  return actor_cast<actor>(actor_ptr);
+}
+
