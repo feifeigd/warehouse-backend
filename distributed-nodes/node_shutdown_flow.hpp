@@ -2,6 +2,10 @@
 
 #include "cluster.hpp"
 
+#include <queue>
+#include <unordered_map>
+#include <unordered_set>
+
 shutdown_request make_local_shutdown_request(const node_manifest& manifest,
                                              const std::string& reason) {
   return shutdown_request{
@@ -32,35 +36,41 @@ shutdown_request make_child_shutdown_request(const node_manifest& manifest,
   };
 }
 
-std::vector<std::string> collect_subtree_node_names(
+std::unordered_set<std::string> collect_subtree_node_names(
   const topology_snapshot& snapshot, const std::string& root_name) {
-  std::vector<std::string> result;
-  std::vector<std::string> pending{root_name};
-  for (size_t index = 0; index < pending.size(); ++index) {
-    const auto& parent = pending[index];
-    for (const auto& node : snapshot.nodes) {
-      if (node.parent == parent) {
-        result.push_back(node.node_name);
-        pending.push_back(node.node_name);
-      }
+  std::unordered_set<std::string> result;
+  std::unordered_map<std::string, std::vector<std::string>> children_by_parent;
+  for (const auto& node : snapshot.nodes)
+    children_by_parent[node.parent].push_back(node.node_name);
+
+  std::queue<std::string> pending;
+  pending.push(root_name);
+  while (!pending.empty()) {
+    auto parent = std::move(pending.front());
+    pending.pop();
+    auto iter = children_by_parent.find(parent);
+    if (iter == children_by_parent.end())
+      continue;
+    for (const auto& child : iter->second) {
+      result.insert(child);
+      pending.push(child);
     }
   }
   return result;
 }
 
 bool topology_contains_any(const topology_snapshot& snapshot,
-                           const std::vector<std::string>& node_names) {
+                           const std::unordered_set<std::string>& node_names) {
   return std::any_of(snapshot.nodes.begin(), snapshot.nodes.end(),
                      [&](const node_manifest& node) {
-                       return std::find(node_names.begin(), node_names.end(),
-                                        node.node_name) != node_names.end();
+                       return node_names.contains(node.node_name);
                      });
 }
 
 void wait_for_subtree_shutdown(actor_system& sys, cluster& sys_cluster,
                                const node_config& cfg,
                                const node_manifest& manifest,
-                               const std::vector<std::string>& node_names) {
+                               const std::unordered_set<std::string>& node_names) {
   if (node_names.empty())
     return;
   scoped_actor self{sys};
@@ -80,7 +90,7 @@ void wait_for_subtree_shutdown(actor_system& sys, cluster& sys_cluster,
               cfg.name, manifest.node_name);
 }
 
-std::vector<std::string> propagate_shutdown_to_children(
+std::unordered_set<std::string> propagate_shutdown_to_children(
                                     actor_system& sys, cluster& sys_cluster,
                                     const node_config& cfg,
                                     const node_manifest& manifest,

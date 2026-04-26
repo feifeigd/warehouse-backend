@@ -14,6 +14,10 @@ struct node_config : actor_system_config {
   std::string storage_key = "profile";
   uint32_t lease_seconds = 15;
   uint32_t node_heartbeat_seconds = 5;
+  uint32_t cluster_request_timeout_ms = 10000;
+  uint32_t cluster_register_retry_ms = 30000;
+  uint32_t cluster_retry_interval_ms = 500;
+  uint32_t shutdown_request_timeout_ms = 30000;
   uint32_t rpc_resolve_timeout_ms = 10000;
   uint32_t rpc_request_timeout_ms = 10000;
   uint32_t rpc_invalidate_timeout_ms = 5000;
@@ -42,6 +46,14 @@ struct node_config : actor_system_config {
            "seconds before master/region evict a silent node")
       .add(node_heartbeat_seconds, "node-heartbeat-seconds",
            "seconds between node heartbeat refreshes, 0 disables heartbeats")
+      .add(cluster_request_timeout_ms, "cluster-request-timeout-ms",
+           "cluster management request timeout in milliseconds")
+      .add(cluster_register_retry_ms, "cluster-register-retry-ms",
+           "total retry time for master/parent registration in milliseconds")
+      .add(cluster_retry_interval_ms, "cluster-retry-interval-ms",
+           "retry interval for cluster registration in milliseconds")
+      .add(shutdown_request_timeout_ms, "shutdown-request-timeout-ms",
+           "node shutdown request timeout in milliseconds")
       .add(rpc_resolve_timeout_ms, "rpc-resolve-timeout-ms",
            "RPC actor resolve timeout in milliseconds")
       .add(rpc_request_timeout_ms, "rpc-request-timeout-ms",
@@ -97,6 +109,22 @@ public:
   void mark_master_unavailable() {
     master_actor_ = {};
   }
+
+  std::chrono::milliseconds cluster_request_timeout() const {
+    return std::chrono::milliseconds{cfg_.cluster_request_timeout_ms};
+  }
+
+  std::chrono::milliseconds cluster_register_retry() const {
+    return std::chrono::milliseconds{cfg_.cluster_register_retry_ms};
+  }
+
+  std::chrono::milliseconds cluster_retry_interval() const {
+    return std::chrono::milliseconds{cfg_.cluster_retry_interval_ms};
+  }
+
+  std::chrono::milliseconds shutdown_request_timeout() const {
+    return std::chrono::milliseconds{cfg_.shutdown_request_timeout_ms};
+  }
   
   bool register_with_master(const node_manifest& manifest,
                             const actor& monitor_actor) {
@@ -113,7 +141,7 @@ public:
                      reply->message);
         return true;
       },
-      30s, 500ms);
+      cluster_register_retry(), cluster_retry_interval());
     if (!registered) {
       sys_.println("[{}] registration was rejected", cfg_.name);
       return false;
@@ -150,7 +178,7 @@ public:
           return {};
         }
         auto reply = request_actor<register_reply>(
-          self, region_actor, 10s, "parent attach",
+          self, region_actor, cluster_request_timeout(), "parent attach",
           region_attach_atom_v, node_registration{manifest, monitor_actor});
         if (!reply)
           return {};
@@ -158,7 +186,7 @@ public:
                      reply->message);
         return reply->ok ? std::optional<bool>{true} : std::nullopt;
       }
-    , 30s, 500ms);
+    , cluster_register_retry(), cluster_retry_interval());
     return static_cast<bool>(attached);
   }
 
@@ -182,8 +210,8 @@ public:
       return false;
     }
     auto reply = request_actor<register_reply>(
-      self, region_actor, 10s, "parent detach", region_detach_atom_v,
-      manifest.node_name);
+      self, region_actor, cluster_request_timeout(), "parent detach",
+      region_detach_atom_v, manifest.node_name);
     if (!reply)
       return false;
     sys_.println("[{}] parent detach: {}", manifest.node_name, reply->message);
@@ -195,7 +223,8 @@ public:
       return false;
     scoped_actor self{sys_};
     auto reply = request_master<register_reply>(
-      self, 10s, "unregister", master_unregister_atom_v, node_name);
+      self, cluster_request_timeout(), "unregister", master_unregister_atom_v,
+      node_name);
     if (!reply)
       return false;
     sys_.println("[{}] unregister from master: {}", cfg_.name, reply->message);
@@ -245,15 +274,17 @@ public:
       return false;
     }
     auto reply = request_actor<register_reply>(
-      self, control, 30s, "shutdown request to '" + node_name + "'",
+      self, control, shutdown_request_timeout(),
+      "shutdown request to '" + node_name + "'",
       node_shutdown_atom_v, request
     );
     return reply && reply->ok;
   }
 
   std::optional<topology_snapshot> request_topology(scoped_actor& self) {
-    return request_master<topology_snapshot>(self, 10s, "topology request",
-                                             master_topology_atom_v);
+    return request_master<topology_snapshot>(
+      self, cluster_request_timeout(), "topology request",
+      master_topology_atom_v);
   }
   
   std::optional<actor_route> request_route(scoped_actor& self,
@@ -262,7 +293,8 @@ public:
     if (!master_actor_)
       return {};
     std::optional<actor_route> route;
-    self->request(master_actor_, 10s, master_resolve_atom_v, node_name, actor_name)
+    self->request(master_actor_, cluster_request_timeout(),
+                  master_resolve_atom_v, node_name, actor_name)
       .receive(
         [&](const actor_route& value) {
           route = value;
@@ -279,8 +311,9 @@ public:
   
   std::optional<child_snapshot> request_children(scoped_actor& self,
                                                 const std::string& parent_name) {
-    return request_master<child_snapshot>(self, 10s, "children request",
-                                          master_children_atom_v, parent_name);
+    return request_master<child_snapshot>(
+      self, cluster_request_timeout(), "children request",
+      master_children_atom_v, parent_name);
   }
 private:
 
@@ -318,7 +351,8 @@ private:
 
   std::optional<register_reply> request_register(scoped_actor& self,
                                                 const node_registration& registration) {
-    return request_master<register_reply>(self, 10s, "registration",
-                                          master_register_atom_v, registration);
+    return request_master<register_reply>(
+      self, cluster_request_timeout(), "registration", master_register_atom_v,
+      registration);
   }
 };
