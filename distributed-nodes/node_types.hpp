@@ -439,3 +439,16 @@ void sort_manifests(std::vector<T>& xs) {
   });
 }
 
+template <class F>
+auto with_retry(F fn, std::chrono::milliseconds total = 4s,
+                std::chrono::milliseconds step = 100ms) {
+  auto result = fn();
+  auto waited = 0ms;
+  while (!result && waited < total) {
+    std::this_thread::sleep_for(step);
+    waited += step;
+    result = fn();
+  }
+  return result;
+}
+
