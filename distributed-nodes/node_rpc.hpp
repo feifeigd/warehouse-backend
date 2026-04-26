@@ -118,6 +118,11 @@ struct rpc_call_result {
   }
 };
 
+struct rpc_notify_result {
+  bool ok = false;
+  std::string message;
+};
+
 actor spawn_rpc_client(actor_system& sys, const node_config& cfg,
                        actor master_actor = {}) {
   return sys.spawn(actor_from_state<rpc_client_state>, cfg.master_host,
@@ -153,6 +158,43 @@ void rpc_invalidate_actor(scoped_actor& self, const actor& rpc_client,
       // nop
     }
   );
+}
+
+template <class... Args>
+rpc_notify_result rpc_notify(scoped_actor& self, const actor& rpc_client,
+                             const std::string& node_name,
+                             const std::string& actor_name,
+                             Args&&... args) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name);
+  if (!resolved.ok)
+    return rpc_notify_result{false, resolved.message};
+  anon_send(resolved.remote, std::forward<Args>(args)...);
+  return rpc_notify_result{true, "sent"};
+}
+
+template <class... Args>
+rpc_call_result<register_reply> rpc_command(scoped_actor& self,
+                                            const actor& rpc_client,
+                                            const std::string& node_name,
+                                            const std::string& actor_name,
+                                            Args&&... args) {
+  auto resolved = rpc_resolve_actor(self, rpc_client, node_name, actor_name);
+  if (!resolved.ok)
+    return {{}, resolved.message};
+
+  rpc_call_result<register_reply> result;
+  self->request(resolved.remote, 10s, std::forward<Args>(args)...).receive(
+    [&](const register_reply& reply) {
+      result.value = reply;
+      result.message = reply.message;
+    },
+    [&](const error& err) {
+      rpc_invalidate_actor(self, rpc_client, node_name, actor_name);
+      result.message = "command failed: " + node_name + "/" + actor_name
+                       + " (" + to_string(err) + ")";
+    }
+  );
+  return result;
 }
 
 rpc_call_result<analytics_result> rpc_compute_analyze(
