@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "node_types.hpp"
 #include "cluster.hpp"
@@ -266,6 +266,8 @@ void propagate_shutdown_to_parent(actor_system& sys, cluster& sys_cluster,
                                   const shutdown_request& trigger) {
   if (!cfg.shutdown_parent_on_exit || manifest.parent.empty())
     return;
+  if (manifest.parent == "master")  // master 节点，不能被任何子节点关闭
+    return;
   if (trigger.source == shutdown_source::parent)
     return;
   scoped_actor self{sys};
@@ -274,7 +276,7 @@ void propagate_shutdown_to_parent(actor_system& sys, cluster& sys_cluster,
                                                                  trigger));
 }
 
-// 椤哄簭鍏虫満锛氬厛閫氱煡瀛愯妭鐐癸紝鍐嶉€氱煡鐖惰妭鐐癸紝閬垮厤鐖惰妭鐐瑰厛鍏虫満瀵艰嚧瀛愯妭鐐规棤娉曟帴鏀跺叧鏈洪€氱煡銆?
+// Orderly shutdown: stop child subtrees before this node notifies its parent.
 void propagate_orderly_shutdown(actor_system& sys, cluster& sys_cluster,
                                 const node_config& cfg,
                                 const node_manifest& manifest,
