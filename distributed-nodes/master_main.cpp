@@ -11,6 +11,7 @@ struct master_config : node_config {
 void run_master(actor_system& sys, const node_config& cfg) {
   auto manifest = make_manifest(cfg, node_kind::master);
   auto shutdown = std::make_shared<shutdown_signal>();
+  shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);
   auto master_actor = sys.spawn(actor_from_state<master_state>, manifest,
                                 std::chrono::seconds{cfg.lease_seconds});

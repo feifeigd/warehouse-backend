@@ -18,18 +18,36 @@ behavior node_control_actor_fun(event_based_actor* self, node_manifest manifest,
       auto source_node = request.source_node.empty() ? "<unknown>"
                                                      : request.source_node;
       auto reason = request.reason;
-      auto accepted = signal->request_shutdown(std::move(request));
-      self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
-                    to_string(manifest.kind), manifest.node_name,
-                    accepted ? "requested" : "already pending",
-                    source_node, to_string(source), reason);
+      auto shutdown_actor = signal->actor_handle();
+      if (!shutdown_actor)
+        return register_reply{false, "shutdown signal not started"};
+      auto response = self->make_response_promise();
+      self->request(shutdown_actor, 5s, shutdown_signal_request_atom_v,
+                    std::move(request)).then(
+        [self, manifest, signal, source, source_node, reason,
+         response](const register_reply& reply) mutable {
+          auto accepted = reply.message == "shutdown requested";
+          self->println("[{}:{}] shutdown {} from '{}' ({}) reason={}",
+                        to_string(manifest.kind), manifest.node_name,
+                        accepted ? "requested" : "already pending",
+                        source_node, to_string(source), reason);
+          if (source != shutdown_source::parent) {
+            response.deliver(reply);
+            return;
+          }
+          signal->add_completion_waiter(response);
+        },
+        [response](const error& err) mutable {
+          response.deliver(register_reply{
+            false,
+            "shutdown request failed: " + to_string(err),
+          });
+        }
+      );
       if (source == shutdown_source::parent) {
-        auto waiter = self->make_response_promise();
-        signal->add_completion_waiter(waiter);
-        return waiter;
+        return response;
       }
-      return register_reply{true, accepted ? "shutdown requested"
-                                           : "shutdown already pending"};
+      return response;
     },
   };
 }
@@ -94,6 +112,13 @@ void stop_managed_node(cluster& sys_cluster, const node_manifest& manifest,
   shutdown_actors(actors);
 }
 
+void detach_managed_node(cluster& sys_cluster, const node_manifest& manifest,
+                         bool attach_parent) {
+  if (attach_parent)
+    sys_cluster.detach_from_parent_region(manifest);
+  sys_cluster.unregister_from_master(manifest.node_name);
+}
+
 void run_managed_node_lifecycle(actor_system& sys, const node_config& cfg,
                                 cluster& sys_cluster,
                                 const node_manifest& manifest,
@@ -118,8 +143,9 @@ void run_managed_node_lifecycle(actor_system& sys, const node_config& cfg,
     auto trigger = shutdown->wait(sys, role, manifest.node_name, cfg.lifetime);
     heartbeats.stop();
     propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
-    stop_managed_node(sys_cluster, manifest, actors, attach_parent);
+    detach_managed_node(sys_cluster, manifest, attach_parent);
     shutdown->complete_shutdown(register_reply{true, "shutdown complete"});
+    shutdown_actors(actors);
     propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
   } while (false);
 

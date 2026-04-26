@@ -12,6 +12,7 @@ void run_region(actor_system& sys, const node_config& cfg) {
   cluster sys_cluster(sys, cfg);
   auto manifest = make_manifest(cfg, node_kind::region);
   auto shutdown = std::make_shared<shutdown_signal>();
+  shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);
   auto router = sys.spawn(actor_from_state<region_state>, manifest,
                           std::chrono::seconds{cfg.lease_seconds});
