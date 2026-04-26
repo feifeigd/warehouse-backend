@@ -37,28 +37,8 @@ void run_compute(actor_system& sys, const node_config& cfg) {
   auto service = sys.spawn(compute_service_actor_fun, manifest);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_compute_service, service);
-  node_heartbeat heartbeats;
-
-  do{
-    if (!start_managed_node(sys, cfg, sys_cluster, manifest, control,
-                            {control, service},
-                            true)) {
-      break;
-    }
-    if (!heartbeats.start(sys, sys_cluster, cfg, manifest, true)) {
-      stop_managed_node(sys_cluster, manifest, {control, service}, true);
-      break;
-    }
-    auto trigger = shutdown->wait(sys, "compute", manifest.node_name, cfg.lifetime);
-    heartbeats.stop();
-    propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
-    stop_managed_node(sys_cluster, manifest, {control, service}, true);
-    shutdown->complete_shutdown(register_reply{true, "shutdown complete"});
-    propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
-  
-  }while(false);
-
-  shutdown_actors({control, service});
+  run_managed_node_lifecycle(sys, cfg, sys_cluster, manifest, shutdown, control,
+                             {control, service}, true, true, "compute");
 }
 
 void caf_main(actor_system& sys, const compute_config& cfg) {

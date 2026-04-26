@@ -17,28 +17,8 @@ void run_region(actor_system& sys, const node_config& cfg) {
                           std::chrono::seconds{cfg.lease_seconds});
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_region_router, router);
-  node_heartbeat heartbeats;
-
-  do{
-    if (!start_managed_node(sys, cfg, sys_cluster, manifest, control,
-                            {control, router},
-                            false)) {
-      break;
-    }
-    if (!heartbeats.start(sys, sys_cluster, cfg, manifest, false)) {
-      stop_managed_node(sys_cluster, manifest, {control, router}, false);
-      break;
-    }
-    auto trigger = shutdown->wait(sys, "region", manifest.node_name, cfg.lifetime);
-    heartbeats.stop();
-    propagate_orderly_shutdown(sys, sys_cluster, cfg, manifest, trigger);
-    stop_managed_node(sys_cluster, manifest, {control, router}, false);
-    shutdown->complete_shutdown(register_reply{true, "shutdown complete"});
-    propagate_shutdown_to_parent(sys, sys_cluster, cfg, manifest, trigger);
-
-  }while(false);
-  
-  shutdown_actors({control, router});
+  run_managed_node_lifecycle(sys, cfg, sys_cluster, manifest, shutdown, control,
+                             {control, router}, false, false, "region");
 }
 
 void caf_main(actor_system& sys, const region_config& cfg) {
