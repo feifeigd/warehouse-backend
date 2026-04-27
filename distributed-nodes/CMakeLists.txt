@@ -4,40 +4,36 @@ target_link_libraries(test_sample PRIVATE CAF::core CAF::io CAF::test)
 add_test(NAME test_sample COMMAND test_sample)
 
 add_subdirectory(core)
-
-set(DISTRIBUTED_NODES_SHARED_FILES
-  app.hpp
-)
-
+add_subdirectory(services)
 
 set(DISTRIBUTED_NODES_CONFIG_FILES
-  caf-application.conf
-  master.conf
-  region-a.conf
-  compute-a1.conf
-  storage-a1.conf
-  client.conf
+  config/caf-application.conf
+  config/master.conf
+  config/region-a.conf
+  config/compute-a1.conf
+  config/storage-a1.conf
+  config/client.conf
 )
 
-function(add_distributed_nodes_executable target_name entry_file)
+function(add_distributed_nodes_executable target_name service_name entry_file)
   add_executable(${target_name}
-    ${entry_file}
-    ${DISTRIBUTED_NODES_SHARED_FILES}
+    app/${entry_file}
+    
     ${DISTRIBUTED_NODES_CONFIG_FILES}
   )
-  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net core)
-  source_group("Shared Files" FILES ${DISTRIBUTED_NODES_SHARED_FILES})
+  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net core ${service_name})
+  
   source_group("Config Files" FILES ${DISTRIBUTED_NODES_CONFIG_FILES})
   set_target_properties(${target_name} PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
   )
 endfunction()
 
-add_distributed_nodes_executable(distributed-nodes-master master_main.cpp)
-add_distributed_nodes_executable(distributed-nodes-region region_main.cpp)
-add_distributed_nodes_executable(distributed-nodes-compute compute_main.cpp)
-add_distributed_nodes_executable(distributed-nodes-storage storage_main.cpp)
-add_distributed_nodes_executable(distributed-nodes-client client_main.cpp)
+add_distributed_nodes_executable(distributed-nodes-master master_service master_main.cpp)
+add_distributed_nodes_executable(distributed-nodes-region region_service region_main.cpp)
+add_distributed_nodes_executable(distributed-nodes-compute compute_service compute_main.cpp)
+add_distributed_nodes_executable(distributed-nodes-storage storage_service storage_main.cpp)
+add_distributed_nodes_executable(distributed-nodes-client  "" client_main.cpp)
 
 add_custom_target(distributed-nodes)
 add_dependencies(distributed-nodes
