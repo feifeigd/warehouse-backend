@@ -2,6 +2,7 @@
 
 #include "node_types.hpp"
 #include "node_config.hpp"
+#include "remote_actor_manager.hpp"
 
 struct rpc_client_state {
   event_based_actor* self;
@@ -9,8 +10,7 @@ struct rpc_client_state {
   uint16_t master_port = 0;
   std::chrono::milliseconds resolve_timeout;
   actor master_actor;
-  std::unordered_map<std::string, actor> actor_cache;
-  std::map<actor_addr, std::set<std::string>> cache_keys_by_addr;
+  remote_actor_manager<event_based_actor> remote_mgr;
   std::unordered_map<std::string, std::vector<response_promise>>
     pending_resolutions;
 
@@ -21,8 +21,8 @@ struct rpc_client_state {
       master_host(std::move(host)),
       master_port(port),
       resolve_timeout(resolve_wait),
-      master_actor(std::move(initial_master)) {
-    // nop
+      master_actor(std::move(initial_master)),
+      remote_mgr(self->system(), self) {
   }
 
   std::string cache_key(const std::string& node_name,
@@ -31,38 +31,15 @@ struct rpc_client_state {
   }
 
   actor cached_actor(const std::string& key) const {
-    auto iter = actor_cache.find(key);
-    if (iter == actor_cache.end())
-      return {};
-    return iter->second;
+    return remote_mgr.find(key);
   }
 
   void erase_cached_actor(const std::string& key) {
-    auto iter = actor_cache.find(key);
-    if (iter == actor_cache.end())
-      return;
-    auto remote = iter->second;
-    auto addr = remote.address();
-    actor_cache.erase(iter);
-    auto reverse_iter = cache_keys_by_addr.find(addr);
-    if (reverse_iter == cache_keys_by_addr.end())
-      return;
-    auto& keys = reverse_iter->second;
-    keys.erase(key);
-    if (!keys.empty())
-      return;
-    cache_keys_by_addr.erase(reverse_iter);
-    self->demonitor(remote);
+    remote_mgr.erase(key);
   }
 
   void cache_actor(const std::string& key, const actor& remote) {
-    erase_cached_actor(key);
-    actor_cache[key] = remote;
-    auto& keys = cache_keys_by_addr[remote.address()];
-    auto first_reference = keys.empty();
-    keys.insert(key);
-    if (first_reference)
-      self->monitor(remote);
+    remote_mgr.add(key, remote);
   }
 
   bool ensure_master() {
@@ -171,16 +148,7 @@ struct rpc_client_state {
         return register_reply{true, "rpc actor cache invalidated"};
       },
       [this](const down_msg& msg) {
-        auto iter = cache_keys_by_addr.find(msg.source);
-        if (iter == cache_keys_by_addr.end())
-          return;
-        auto keys = std::move(iter->second);
-        cache_keys_by_addr.erase(iter);
-        for (const auto& key : keys) {
-          self->println("[rpc] cached actor '{}' went down: {}", key,
-                        to_string(msg.reason));
-          actor_cache.erase(key);
-        }
+        remote_mgr.handle_down(msg);
       },
     };
   }

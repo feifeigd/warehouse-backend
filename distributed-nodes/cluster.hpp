@@ -11,13 +11,11 @@ class cluster{
   const node_config& cfg_;
   actor master_actor_;
   std::unordered_map<std::string, actor_route> route_cache_;
-  // 替换为 remote_actor_manager
-  std::unique_ptr<remote_actor_manager> remote_mgr_;
+  remote_actor_manager<caf::scoped_actor> remote_mgr_;
   caf::scoped_actor self_{sys_};
 public:
   cluster(actor_system& sys, const node_config& cfg, actor master_actor = {}) 
-    : sys_(sys), cfg_(cfg), master_actor_(master_actor), self_{sys} {
-    remote_mgr_ = std::make_unique<remote_actor_manager>(sys_, self_);
+    : sys_(sys), cfg_(cfg), master_actor_(master_actor), remote_mgr_(sys_, &self_), self_{sys} {
   }
 
   bool connect_to_master() {
@@ -275,13 +273,13 @@ private:
                                 const std::string& actor_name) {
     auto key = cache_key(node_name, actor_name);
     route_cache_.erase(key);
-    if (remote_mgr_) remote_mgr_->erase(key);
+    remote_mgr_.erase(key);
   }
 
   actor lookup_cached_actor(scoped_actor& self, const std::string& node_name,
                             const std::string& actor_name) {
     auto key = cache_key(node_name, actor_name);
-    auto cached = remote_mgr_->find(key);
+    auto cached = remote_mgr_.find(key);
     if (cached)
       return cached;
 
@@ -292,12 +290,12 @@ private:
     auto remote = lookup_remote_named_actor(route->host, route->port,
                                             route->actor_name);
     if (remote) {
-      remote_mgr_->add(key, remote);
+      remote_mgr_.add(key, remote);
       return remote;
     }
 
     // 失败时清理
-    remote_mgr_->erase(key);
+    remote_mgr_.erase(key);
     route = request_route(self, node_name, actor_name);
     if (!route)
       return {};
@@ -305,7 +303,7 @@ private:
     remote = lookup_remote_named_actor(route->host, route->port,
                                        route->actor_name);
     if (remote)
-      remote_mgr_->add(key, remote);
+      remote_mgr_.add(key, remote);
     return remote;
   }
 
