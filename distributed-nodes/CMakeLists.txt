@@ -3,9 +3,12 @@ add_executable(test_sample test_sample.test.cpp)
 target_link_libraries(test_sample PRIVATE CAF::core CAF::io CAF::test)
 add_test(NAME test_sample COMMAND test_sample)
 
+add_subdirectory(core)
+
 set(DISTRIBUTED_NODES_SHARED_FILES
   app.hpp
 )
+
 
 set(DISTRIBUTED_NODES_CONFIG_FILES
   caf-application.conf
@@ -22,7 +25,7 @@ function(add_distributed_nodes_executable target_name entry_file)
     ${DISTRIBUTED_NODES_SHARED_FILES}
     ${DISTRIBUTED_NODES_CONFIG_FILES}
   )
-  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net)
+  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net core)
   source_group("Shared Files" FILES ${DISTRIBUTED_NODES_SHARED_FILES})
   source_group("Config Files" FILES ${DISTRIBUTED_NODES_CONFIG_FILES})
   set_target_properties(${target_name} PROPERTIES
