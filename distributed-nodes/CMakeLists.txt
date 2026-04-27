@@ -1,7 +1,4 @@
-# 下个最简单的测试
-add_executable(test_sample test_sample.test.cpp)
-target_link_libraries(test_sample PRIVATE CAF::core CAF::io CAF::test)
-add_test(NAME test_sample COMMAND test_sample)
+
 
 add_subdirectory(core)
 add_subdirectory(services)
@@ -26,7 +23,9 @@ function(add_distributed_nodes_executable target_name service_name entry_file)
   source_group("Config Files" FILES ${DISTRIBUTED_NODES_CONFIG_FILES})
   set_target_properties(${target_name} PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    FOLDER "app-nodes"
   )
+  
 endfunction()
 
 add_distributed_nodes_executable(distributed-nodes-master master_service master_main.cpp)
@@ -43,3 +42,7 @@ add_dependencies(distributed-nodes
   distributed-nodes-storage
   distributed-nodes-client
 )
+
+set_target_properties(distributed-nodes PROPERTIES FOLDER "distributed-nodes")
+
+add_subdirectory(tests)

@@ -4,3 +4,4 @@ add_library(region_service STATIC
 )
 target_link_libraries(region_service PUBLIC core)
 target_include_directories(region_service PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(region_service PROPERTIES FOLDER "services")

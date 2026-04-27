@@ -4,3 +4,4 @@ add_library(compute_service STATIC
 )
 target_link_libraries(compute_service PUBLIC core)
 target_include_directories(compute_service PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(compute_service PROPERTIES FOLDER "services")

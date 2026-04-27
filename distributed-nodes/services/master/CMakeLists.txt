@@ -4,3 +4,4 @@ add_library(master_service STATIC
 )
 target_link_libraries(master_service PUBLIC core)
 target_include_directories(master_service PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+set_target_properties(master_service PROPERTIES FOLDER "services")
