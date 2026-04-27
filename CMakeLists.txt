@@ -37,6 +37,26 @@ function(get_caf)
     )
 
     FetchContent_MakeAvailable(caf)
+    # 设置 CAF 相关 target 在 VS 的同一目录
+    get_property(caf_targets DIRECTORY ${caf_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+    
+    foreach(tgt ${caf_targets})
+        set_target_properties(${tgt} PROPERTIES FOLDER "ThirdParty/CAF")
+        message(STATUS "Set target ${tgt} to folder ThirdParty/CAF")
+    endforeach()
+    set_target_properties(
+        caf-net-autobahn-driver
+        caf-test-test
+        core_enums
+        io_enums
+        libcaf_core caf-core-test 
+        libcaf_io caf-io-test
+        libcaf_net caf-net-test
+        libcaf_openssl caf-openssl-test 
+        net_enums
+        test_enums
+        PROPERTIES FOLDER "ThirdParty/CAF")
+    
 
 endfunction(get_caf)
 get_caf()
