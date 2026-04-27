@@ -23,7 +23,7 @@ struct node_heartbeat_state {
       manifest(std::move(node)),
       monitor_actor(std::move(monitor)),
       heartbeat_parent(check_parent),
-      interval(std::chrono::seconds{config.node_heartbeat_seconds}) {
+      interval(config.node_heartbeat_interval()) {
     // nop
   }
 

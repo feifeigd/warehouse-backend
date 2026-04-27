@@ -34,19 +34,19 @@ public:
   }
 
   std::chrono::milliseconds cluster_request_timeout() const {
-    return std::chrono::milliseconds{cfg_.cluster_request_timeout_ms};
+    return cfg_.cluster_request_timeout();
   }
 
   std::chrono::milliseconds cluster_register_retry() const {
-    return std::chrono::milliseconds{cfg_.cluster_register_retry_ms};
+    return cfg_.cluster_register_retry();
   }
 
   std::chrono::milliseconds cluster_retry_interval() const {
-    return std::chrono::milliseconds{cfg_.cluster_retry_interval_ms};
+    return cfg_.cluster_retry_interval();
   }
 
   std::chrono::milliseconds shutdown_request_timeout() const {
-    return std::chrono::milliseconds{cfg_.shutdown_request_timeout_ms};
+    return cfg_.shutdown_request_timeout();
   }
   
   bool register_with_master(const node_manifest& manifest,

@@ -2,6 +2,7 @@
 
 #include <caf/actor_system_config.hpp>
 
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <utility>
@@ -28,6 +29,42 @@ struct node_config : caf::actor_system_config {
   bool shutdown_parent_on_exit = false;
   bool shutdown_children_on_exit = false;
   uint32_t lifetime = 0;
+
+     std::chrono::seconds lease_duration() const {
+          return std::chrono::seconds{lease_seconds};
+     }
+
+     std::chrono::seconds node_heartbeat_interval() const {
+          return std::chrono::seconds{node_heartbeat_seconds};
+     }
+
+     std::chrono::milliseconds cluster_request_timeout() const {
+          return std::chrono::milliseconds{cluster_request_timeout_ms};
+     }
+
+     std::chrono::milliseconds cluster_register_retry() const {
+          return std::chrono::milliseconds{cluster_register_retry_ms};
+     }
+
+     std::chrono::milliseconds cluster_retry_interval() const {
+          return std::chrono::milliseconds{cluster_retry_interval_ms};
+     }
+
+     std::chrono::milliseconds shutdown_request_timeout() const {
+          return std::chrono::milliseconds{shutdown_request_timeout_ms};
+     }
+
+     std::chrono::milliseconds rpc_resolve_timeout() const {
+          return std::chrono::milliseconds{rpc_resolve_timeout_ms};
+     }
+
+     std::chrono::milliseconds rpc_request_timeout() const {
+          return std::chrono::milliseconds{rpc_request_timeout_ms};
+     }
+
+     std::chrono::milliseconds rpc_invalidate_timeout() const {
+          return std::chrono::milliseconds{rpc_invalidate_timeout_ms};
+     }
 
   explicit node_config(std::string default_name, uint16_t default_port,
                        std::string default_parent = {},

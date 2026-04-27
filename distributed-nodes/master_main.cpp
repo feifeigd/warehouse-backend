@@ -15,7 +15,7 @@ void run_master(actor_system& sys, const node_config& cfg) {
   shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);
   auto master_actor = sys.spawn(actor_from_state<master_state>, manifest,
-                                std::chrono::seconds{cfg.lease_seconds});
+                                cfg.lease_duration());
   cluster sys_cluster(sys, cfg, master_actor);
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_master_control, master_actor);

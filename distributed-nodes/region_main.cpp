@@ -16,7 +16,7 @@ void run_region(actor_system& sys, const node_config& cfg) {
   shutdown->start(sys, manifest.node_name, cfg.lifetime);
   auto control = sys.spawn(node_control_actor_fun, manifest, shutdown);
   auto router = sys.spawn(actor_from_state<region_state>, manifest,
-                          std::chrono::seconds{cfg.lease_seconds});
+                          cfg.lease_duration());
   sys.registry().put(k_node_control, control);
   sys.registry().put(k_region_router, router);
   run_managed_node_lifecycle(sys, cfg, sys_cluster, manifest, shutdown, control,
