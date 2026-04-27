@@ -2,6 +2,7 @@
 
 #include "node_types.hpp"
 #include "node_config.hpp"
+#include "remote_actor_manager.hpp"
 
 // cluster: main-thread synchronous client.
 // Do not share across actors.
@@ -9,9 +10,14 @@ class cluster{
   actor_system& sys_;
   const node_config& cfg_;
   actor master_actor_;
+  std::unordered_map<std::string, actor_route> route_cache_;
+  // 替换为 remote_actor_manager
+  std::unique_ptr<remote_actor_manager> remote_mgr_;
+  caf::scoped_actor self_{sys_};
 public:
-  cluster(actor_system& sys, const node_config& cfg, actor master_actor = {}) : sys_(sys), cfg_(cfg), master_actor_(master_actor) {
-    // nop
+  cluster(actor_system& sys, const node_config& cfg, actor master_actor = {}) 
+    : sys_(sys), cfg_(cfg), master_actor_(master_actor), self_{sys} {
+    remote_mgr_ = std::make_unique<remote_actor_manager>(sys_, self_);
   }
 
   bool connect_to_master() {
@@ -31,6 +37,7 @@ public:
 
   void mark_master_unavailable() {
     master_actor_ = {};
+    route_cache_.clear();
   }
 
   std::chrono::milliseconds cluster_request_timeout() const {
@@ -53,7 +60,7 @@ public:
                             const actor& monitor_actor) {
     auto registered = with_retry(
       [&]() -> std::optional<bool> {
-        if (!master_actor_ && !connect_to_master())
+        if (!ensure_master_connection())
           return {};
         scoped_actor self{sys_};
         auto reply = request_register(self,
@@ -84,17 +91,11 @@ public:
 
     auto attached = with_retry(
       [&]() -> std::optional<bool> {
-        if (!master_actor_ && !connect_to_master())
+        if (!ensure_master_connection())
           return {};
         scoped_actor self{sys_};
-        auto route = request_route(self, manifest.parent, k_region_router);
-        if (!route) {
-          sys_.println("[{}] could not resolve parent region '{}'",
-                       manifest.node_name, manifest.parent);
-          return {};
-        }
-        auto region_actor = lookup_remote_named_actor(route->host, route->port,
-                                                      route->actor_name);
+        auto region_actor = lookup_cached_actor(self, manifest.parent,
+                                                k_region_router);
         if (!region_actor) {
           sys_.println("[{}] could not lookup parent region actor '{}'",
                        manifest.node_name, manifest.parent);
@@ -103,8 +104,10 @@ public:
         auto reply = request_actor<register_reply>(
           self, region_actor, cluster_request_timeout(), "parent attach",
           region_attach_atom_v, node_registration{manifest, monitor_actor});
-        if (!reply)
+        if (!reply) {
+          invalidate_cached_lookup(manifest.parent, k_region_router);
           return {};
+        }
         sys_.println("[{}] parent attach: {}", manifest.node_name,
                      reply->message);
         return reply->ok ? std::optional<bool>{true} : std::nullopt;
@@ -119,14 +122,8 @@ public:
     if (!master_actor_)
       return false;
     scoped_actor self{sys_};
-    auto route = request_route(self, manifest.parent, k_region_router);
-    if (!route) {
-      sys_.println("[{}] could not resolve parent region '{}' for detach",
-                  manifest.node_name, manifest.parent);
-      return false;
-    }
-    auto region_actor = lookup_remote_named_actor(route->host, route->port,
-                                                  route->actor_name);
+    auto region_actor = lookup_cached_actor(self, manifest.parent,
+                                            k_region_router);
     if (!region_actor) {
       sys_.println("[{}] could not lookup parent region actor '{}' for detach",
                   manifest.node_name, manifest.parent);
@@ -135,14 +132,27 @@ public:
     auto reply = request_actor<register_reply>(
       self, region_actor, cluster_request_timeout(), "parent detach",
       region_detach_atom_v, manifest.node_name);
-    if (!reply)
-      return false;
+    if (!reply) {
+      invalidate_cached_lookup(manifest.parent, k_region_router);
+      region_actor = lookup_cached_actor(self, manifest.parent,
+                                         k_region_router);
+      if (!region_actor) {
+        sys_.println("[{}] could not refresh parent region actor '{}' for detach",
+                    manifest.node_name, manifest.parent);
+        return false;
+      }
+      reply = request_actor<register_reply>(
+        self, region_actor, cluster_request_timeout(), "parent detach",
+        region_detach_atom_v, manifest.node_name);
+      if (!reply)
+        return false;
+    }
     sys_.println("[{}] parent detach: {}", manifest.node_name, reply->message);
     return reply->ok;
   }
 
   bool unregister_from_master(const std::string& node_name) {
-    if (!master_actor_)
+    if (!ensure_master_connection())
       return false;
     scoped_actor self{sys_};
     auto reply = request_master<register_reply>(
@@ -161,17 +171,11 @@ public:
   actor lookup_parent_region_actor(const node_manifest& manifest) {
     if (manifest.parent.empty())
       return {};
-    if (!master_actor_ && !connect_to_master())
+    if (!ensure_master_connection())
       return {};
     scoped_actor self{sys_};
-    auto route = request_route(self, manifest.parent, k_region_router);
-    if (!route) {
-      sys_.println("[{}] could not resolve parent region '{}' for heartbeat",
-                   manifest.node_name, manifest.parent);
-      return {};
-    }
-    auto region_actor = lookup_remote_named_actor(route->host, route->port,
-                                                  route->actor_name);
+    auto region_actor = lookup_cached_actor(self, manifest.parent,
+                                            k_region_router);
     if (!region_actor) {
       sys_.println("[{}] could not lookup parent region actor '{}' for heartbeat",
                    manifest.node_name, manifest.parent);
@@ -182,10 +186,7 @@ public:
 
   actor lookup_node_control_actor(scoped_actor& self,
                                   const std::string& node_name) {
-    auto route = request_route(self, node_name, k_node_control);
-    if (!route)
-      return {};
-    return lookup_remote_named_actor(route->host, route->port, route->actor_name);
+    return lookup_cached_actor(self, node_name, k_node_control);
   }
 
   bool request_node_shutdown(scoped_actor& self, const std::string& node_name,
@@ -201,6 +202,20 @@ public:
       "shutdown request to '" + node_name + "'",
       node_shutdown_atom_v, request
     );
+    if (!reply) {
+      invalidate_cached_lookup(node_name, k_node_control);
+      control = lookup_node_control_actor(self, node_name);
+      if (!control) {
+        sys_.println("[{}] could not refresh node control for '{}'",
+                     cfg_.name, node_name);
+        return false;
+      }
+      reply = request_actor<register_reply>(
+        self, control, shutdown_request_timeout(),
+        "shutdown request to '" + node_name + "'",
+        node_shutdown_atom_v, request
+      );
+    }
     return reply && reply->ok;
   }
 
@@ -213,14 +228,19 @@ public:
   std::optional<actor_route> request_route(scoped_actor& self,
                                           const std::string& node_name,
                                           const std::string& actor_name) {
-    if (!master_actor_)
+    if (!ensure_master_connection())
       return {};
+    auto key = cache_key(node_name, actor_name);
+    auto cache_iter = route_cache_.find(key);
+    if (cache_iter != route_cache_.end())
+      return cache_iter->second;
     std::optional<actor_route> route;
     self->request(master_actor_, cluster_request_timeout(),
                   master_resolve_atom_v, node_name, actor_name)
       .receive(
         [&](const actor_route& value) {
           route = value;
+          route_cache_[key] = value;
         },
         [&](const error& err) {
           sys_.println("[{}] resolve {}:{} failed: {}", cfg_.name, node_name, actor_name,
@@ -239,6 +259,55 @@ public:
       master_children_atom_v, parent_name);
   }
 private:
+
+  std::string cache_key(const std::string& node_name,
+                        const std::string& actor_name) const {
+    return node_name + "/" + actor_name;
+  }
+
+  bool ensure_master_connection() {
+    if (master_actor_)
+      return true;
+    return connect_to_master();
+  }
+
+  void invalidate_cached_lookup(const std::string& node_name,
+                                const std::string& actor_name) {
+    auto key = cache_key(node_name, actor_name);
+    route_cache_.erase(key);
+    if (remote_mgr_) remote_mgr_->erase(key);
+  }
+
+  actor lookup_cached_actor(scoped_actor& self, const std::string& node_name,
+                            const std::string& actor_name) {
+    auto key = cache_key(node_name, actor_name);
+    auto cached = remote_mgr_->find(key);
+    if (cached)
+      return cached;
+
+    auto route = request_route(self, node_name, actor_name);
+    if (!route)
+      return {};
+
+    auto remote = lookup_remote_named_actor(route->host, route->port,
+                                            route->actor_name);
+    if (remote) {
+      remote_mgr_->add(key, remote);
+      return remote;
+    }
+
+    // 失败时清理
+    remote_mgr_->erase(key);
+    route = request_route(self, node_name, actor_name);
+    if (!route)
+      return {};
+
+    remote = lookup_remote_named_actor(route->host, route->port,
+                                       route->actor_name);
+    if (remote)
+      remote_mgr_->add(key, remote);
+    return remote;
+  }
 
   // Helper function to perform retries with a timeout and interval.
   template <class Result, class... Args>
@@ -265,6 +334,8 @@ private:
                                        std::chrono::milliseconds timeout,
                                        const std::string& context,
                                        Args&&... args) {
+    if (!ensure_master_connection())
+      return {};
     auto result = request_actor<Result>(self, master_actor_, timeout, context,
                                         std::forward<Args>(args)...);
     if (!result)

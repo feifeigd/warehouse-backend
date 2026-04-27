@@ -1,3 +1,8 @@
+# 下个最简单的测试
+add_executable(test_sample test_sample.test.cpp)
+target_link_libraries(test_sample PRIVATE CAF::core CAF::io CAF::test)
+add_test(NAME test_sample COMMAND test_sample)
+
 set(DISTRIBUTED_NODES_SHARED_FILES
   app.hpp
 )
@@ -17,7 +22,7 @@ function(add_distributed_nodes_executable target_name entry_file)
     ${DISTRIBUTED_NODES_SHARED_FILES}
     ${DISTRIBUTED_NODES_CONFIG_FILES}
   )
-  target_link_libraries(${target_name} PRIVATE CAF::io)
+  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net)
   source_group("Shared Files" FILES ${DISTRIBUTED_NODES_SHARED_FILES})
   source_group("Config Files" FILES ${DISTRIBUTED_NODES_CONFIG_FILES})
   set_target_properties(${target_name} PROPERTIES
