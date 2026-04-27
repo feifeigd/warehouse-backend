@@ -14,7 +14,7 @@ public:
   using actor_type = caf::actor;
   using down_callback = std::function<void(const key_type&, const caf::down_msg&)>;
 
-  remote_actor_manager(caf::actor_system&, SelfT* self)
+  remote_actor_manager(SelfT* self)
     : self_(self) {}
 
   ~remote_actor_manager() {

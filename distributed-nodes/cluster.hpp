@@ -15,7 +15,7 @@ class cluster{
   caf::scoped_actor self_{sys_};
 public:
   cluster(actor_system& sys, const node_config& cfg, actor master_actor = {}) 
-    : sys_(sys), cfg_(cfg), master_actor_(master_actor), remote_mgr_(sys_, &self_), self_{sys} {
+    : sys_(sys), cfg_(cfg), master_actor_(master_actor), remote_mgr_(&self_), self_{sys} {
   }
 
   bool connect_to_master() {

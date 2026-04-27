@@ -22,7 +22,7 @@ struct rpc_client_state {
       master_port(port),
       resolve_timeout(resolve_wait),
       master_actor(std::move(initial_master)),
-      remote_mgr(self->system(), self) {
+      remote_mgr(self) {
   }
 
   std::string cache_key(const std::string& node_name,
