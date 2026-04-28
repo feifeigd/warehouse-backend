@@ -48,13 +48,17 @@ struct PluginManager::Impl {
 PluginManager::PluginManager() : impl(new Impl) {}
 PluginManager::~PluginManager() { unloadPlugins(); delete impl; }
 
-void PluginManager::loadPlugins(const std::string& directory) {
+std::map<std::string, std::string> PluginManager::searchPlugins(const std::string& directory) {
     unloadPlugins();
+    std::map<std::string, std::string> foundPlugins;
     for (const auto& entry : fs::directory_iterator(directory)) {
         if (!entry.is_regular_file()) continue;
-        const auto& path = entry.path();
 
+        const auto& path = entry.path();
         if (path.extension() != PLUGIN_EXT) continue;
+
+        foundPlugins[path.string()] = path.string();
+        
         LIB_HANDLE lib = DLOPEN(path.wstring().c_str());
         if (!lib) continue;
         auto create = (IPlugin*(*)())DLSYM(lib, "create_plugin");
@@ -70,6 +74,7 @@ void PluginManager::loadPlugins(const std::string& directory) {
             impl->plugins.push_back(std::move(handle));
         }
     }
+    return foundPlugins;
 }
 
 const std::vector<std::unique_ptr<IPlugin>>& PluginManager::getPlugins() const {
