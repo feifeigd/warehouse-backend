@@ -29,8 +29,10 @@ CAF_BEGIN_TYPE_ID_BLOCK(plugin_types, 1000)
     CAF_ADD_TYPE_ID(plugin_types, PluginMessage)
     CAF_ADD_TYPE_ID(plugin_types, Ping)
     CAF_ADD_TYPE_ID(plugin_types, Pong)
+    
+    CAF_ADD_ATOM(plugin_types, shutdown_actor_atom)
+    
 CAF_END_TYPE_ID_BLOCK(plugin_types)
 
 // 示例
 // self->send(other_actor, PluginMessage{42, "Hello from plugin!"});
-

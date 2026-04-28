@@ -1,6 +1,7 @@
 
 add_library(plugin_sdk
     lib.cpp
+    graceful_base_state.h
     IPlugin.h
     plugin_types.hpp
     PluginManager.hpp
