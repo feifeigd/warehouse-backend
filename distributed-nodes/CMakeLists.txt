@@ -18,7 +18,7 @@ function(add_distributed_nodes_executable target_name service_name entry_file)
     
     ${DISTRIBUTED_NODES_CONFIG_FILES}
   )
-  target_link_libraries(${target_name} PRIVATE CAF::io CAF::net core ${service_name})
+  target_link_libraries(${target_name} PRIVATE CAF::core CAF::io CAF::net d7kj.core ${service_name})
   
   source_group("Config Files" FILES ${DISTRIBUTED_NODES_CONFIG_FILES})
   set_target_properties(${target_name} PROPERTIES
