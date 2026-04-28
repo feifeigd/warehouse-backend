@@ -1,25 +1,45 @@
 #include "PluginManager.hpp"
-#include <vector>
+
+
 #include <string>
+#include <string_view>
+using namespace std::literals;  // sv
+
+// 平台特定的动态库加载宏
+#ifdef _WIN32
+    #include <windows.h>
+    #define LIB_HANDLE HMODULE
+    #define DLOPEN(path) LoadLibraryW(path)
+    #define DLSYM(handle, symbol) GetProcAddress(handle, symbol)
+    #define DLCLOSE(handle) FreeLibrary(handle)
+    constexpr std::string_view PLUGIN_EXT = ".dll"sv;
+#elif defined(__APPLE__) // macOS
+    #include <dlfcn.h>
+    #define LIB_HANDLE void*
+    #define DLOPEN(path) dlopen(path, RTLD_LAZY)
+    #define DLSYM(handle, symbol) dlsym(handle, symbol)
+    #define DLCLOSE(handle) dlclose(handle)
+    constexpr std::string_view PLUGIN_EXT = ".dylib"sv;
+#else // Linux and other POSIX systems
+    #include <dlfcn.h>
+    #define LIB_HANDLE void*
+    #define DLOPEN(path) dlopen(path, RTLD_LAZY)
+    #define DLSYM(handle, symbol) dlsym(handle, symbol)
+    #define DLCLOSE(handle) dlclose(handle)
+    constexpr std::string_view PLUGIN_EXT = ".so"sv;
+#endif
+
+#include <vector>
 #include <memory>
 #include <filesystem>
 #include <iostream>
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
 using namespace std;
 namespace fs = std::filesystem;
 
+
 struct PluginManager::Impl {
     struct PluginHandle {
-#ifdef _WIN32
-        HMODULE handle = nullptr;
-#else
-        void* handle = nullptr;
-#endif
+        LIB_HANDLE handle;
         std::unique_ptr<IPlugin> instance;
     };
     std::vector<PluginHandle> plugins;
@@ -33,23 +53,13 @@ void PluginManager::loadPlugins(const std::string& directory) {
     for (const auto& entry : fs::directory_iterator(directory)) {
         if (!entry.is_regular_file()) continue;
         const auto& path = entry.path();
-#ifdef _WIN32
-        if (path.extension() != ".dll") continue;
-        HMODULE lib = LoadLibraryW(path.wstring().c_str());
+
+        if (path.extension() != PLUGIN_EXT) continue;
+        LIB_HANDLE lib = DLOPEN(path.wstring().c_str());
         if (!lib) continue;
-        auto create = (IPlugin*(*)())GetProcAddress(lib, "create_plugin");
-#else
-        if (path.extension() != ".so" && path.extension() != ".dylib") continue;
-        void* lib = dlopen(path.c_str(), RTLD_LAZY);
-        if (!lib) continue;
-        auto create = (IPlugin*(*)())dlsym(lib, "create_plugin");
-#endif
+        auto create = (IPlugin*(*)())DLSYM(lib, "create_plugin");
         if (!create) {
-#ifdef _WIN32
-            FreeLibrary(lib);
-#else
-            dlclose(lib);
-#endif
+            DLCLOSE(lib);
             continue;
         }
         std::unique_ptr<IPlugin> plugin(create());
@@ -74,11 +84,7 @@ const std::vector<std::unique_ptr<IPlugin>>& PluginManager::getPlugins() const {
 void PluginManager::unloadPlugins() {
     for (auto& h : impl->plugins) {
         h.instance.reset();
-#ifdef _WIN32
-        if (h.handle) FreeLibrary(h.handle);
-#else
-        if (h.handle) dlclose(h.handle);
-#endif
+        if (h.handle) DLCLOSE(h.handle);
     }
     impl->plugins.clear();
 }
